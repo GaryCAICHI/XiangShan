@@ -79,24 +79,20 @@ class IttageTable(
     println(f"warning: ittage table $tableIdx has small sram depth of $nRows")
   }
 
-  require(histLen == 0 && tagLen == 0 || histLen != 0 && tagLen != 0)
+  require((histLen > 0) && (tagLen > 0))
   private val idxFhInfo    = new FoldedHistoryInfo(histLen, min(histLen, log2Ceil(nRows)))
   private val tagFhInfo    = new FoldedHistoryInfo(histLen, min(histLen, tagLen))
   private val altTagFhInfo = new FoldedHistoryInfo(histLen, min(histLen, tagLen - 1))
 
-  def computeTagAndHash(unhashedIdx: UInt, allFh: PhrAllFoldedHistories): (UInt, UInt) =
-    if (histLen > 0) {
-      val idxFh    = allFh.getHistWithInfo(idxFhInfo).foldedHist
-      val tagFh    = allFh.getHistWithInfo(tagFhInfo).foldedHist
-      val altTagFh = allFh.getHistWithInfo(altTagFhInfo).foldedHist
-      // require(idxFh.getWidth == log2Ceil(nRows))
-      val idx = (unhashedIdx ^ idxFh)(log2Ceil(nRows) - 1, 0)
-      val tag = ((unhashedIdx >> log2Ceil(nRows)).asUInt ^ tagFh ^ (altTagFh << 1).asUInt)(tagLen - 1, 0)
-      (idx, tag)
-    } else {
-      require(tagLen == 0)
-      (unhashedIdx(log2Ceil(nRows) - 1, 0), 0.U)
-    }
+  def computeTagAndHash(unhashedIdx: UInt, allFh: PhrAllFoldedHistories): (UInt, UInt) = {
+    val idxFh    = allFh.getHistWithInfo(idxFhInfo).foldedHist
+    val tagFh    = allFh.getHistWithInfo(tagFhInfo).foldedHist
+    val altTagFh = allFh.getHistWithInfo(altTagFhInfo).foldedHist
+    // require(idxFh.getWidth == log2Ceil(nRows))
+    val idx = (unhashedIdx ^ idxFh)(log2Ceil(nRows) - 1, 0)
+    val tag = ((unhashedIdx >> log2Ceil(nRows)).asUInt ^ tagFh ^ (altTagFh << 1).asUInt)(tagLen - 1, 0)
+    (idx, tag)
+  }
 
   // sanity check, FIXME: is this really needed?
   // The least significant bit of offset is pruned
@@ -142,8 +138,8 @@ class IttageTable(
   private val readWriteConflict    = io.update.valid && io.req.valid
   private val s1_readWriteConflict = RegEnable(readWriteConflict, io.req.valid)
 
-  io.resp.valid    := (if (tagLen != 0) s1_reqReadHit && !s1_readWriteConflict else true.B) && s1_valid // && s1_mask(b)
-  io.resp.bits.cnt := tableReadData.confidenceCnt
+  io.resp.valid             := s1_reqReadHit && !s1_readWriteConflict && s1_valid // && s1_mask(b)
+  io.resp.bits.cnt          := tableReadData.confidenceCnt
   io.resp.bits.usefulCnt    := tableReadData.usefulCnt
   io.resp.bits.targetOffset := tableReadData.targetOffset
 
