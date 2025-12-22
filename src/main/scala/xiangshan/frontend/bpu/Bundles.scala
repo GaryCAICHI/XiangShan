@@ -175,9 +175,9 @@ object BpuPredictionSource {
 // Csr -> Bpu
 class BpuCtrl extends Bundle {
   // s1 predictor enable
-  val ubtbEnable: Bool = Bool()
-  val abtbEnable: Bool = Bool()
-  // val utageEnable: Bool = Bool()
+  val ubtbEnable:  Bool = Bool()
+  val abtbEnable:  Bool = Bool()
+  val utageEnable: Bool = Bool()
   // s3 predictor enable
   val mbtbEnable:   Bool = Bool()
   val tageEnable:   Bool = Bool()
