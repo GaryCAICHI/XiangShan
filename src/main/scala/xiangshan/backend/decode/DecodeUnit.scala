@@ -35,6 +35,8 @@ import xiangshan.backend.fu.vector.Bundles.{VType, Vl}
 import xiangshan.backend.fu.wrapper.CSRToDecode
 import xiangshan.backend.decode.Zimop._
 import yunsuan.{FcmpOpCode, VfaluType, VfcvtType, VfmaType, VfmaOpCode}
+import xiangshan.backend.decode.Zvbaseband.VSCMACC_VV
+import xiangshan.backend.decode.Zvbaseband.VSCMACCCJ_VV
 
 /**
  * Abstract trait giving defaults and other relevant values to different Decode constants/
@@ -982,6 +984,8 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
   private val vmaInsts = Seq(
     VMACC_VV, VMACC_VX, VNMSAC_VV, VNMSAC_VX, VMADD_VV, VMADD_VX, VNMSUB_VV, VNMSUB_VX,
     VWMACCU_VV, VWMACCU_VX, VWMACC_VV, VWMACC_VX, VWMACCSU_VV, VWMACCSU_VX, VWMACCUS_VX,
+    // Zvbaseband
+    VSCMACC_VV, VSCMACCCJ_VV,
   )
   private val wfflagsInsts = Seq(
     // opfff

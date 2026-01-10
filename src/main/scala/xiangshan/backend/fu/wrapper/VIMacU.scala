@@ -118,6 +118,8 @@ class VIMacU(cfg: FuConfig)(implicit p: Parameters) extends VecPipedFuncUnit(cfg
       mod.io.isSub       := VimacOpcode.isSub(opcode)
       mod.io.widen       := widen
       mod.io.isFixP      := VimacOpcode.isFixP(opcode)
+      mod.io.isComp      := VimacOpcode.isComp(opcode)
+      mod.io.isConj      := VimacOpcode.isConj(opcode)
   }
 
   /**

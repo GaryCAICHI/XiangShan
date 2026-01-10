@@ -13,6 +13,7 @@ import xiangshan.backend.fu.FuType
 import xiangshan.backend.fu.vector.Bundles._
 import xiangshan.backend.decode.isa.bitfield.{InstVType, XSInstBitFields, OPCODE7Bit}
 import xiangshan.backend.decode.Zvbb._
+import xiangshan.backend.decode.Zvbaseband._
 
 object RegNumNotAlign {
   def apply(reg: UInt, emul: UInt): Bool = {
@@ -101,6 +102,10 @@ class VecExceptionGen(implicit p: Parameters) extends XSModule{
     VWSUB_WV, VWSUB_WX, VWSUBU_WV, VWSUBU_WX, 
     //fp
     VFWADD_WF, VFWADD_WV, VFWSUB_WF, VFWSUB_WV
+  ).map(_ === inst.ALL).reduce(_ || _)
+
+  private val zvbasebandInst = Seq(
+    VSCMUL_VV, VSCMULCJ_VV, VSCMACC_VV, VSCMACCCJ_VV
   ).map(_ === inst.ALL).reduce(_ || _)
 
   private val narrowingInst = Seq(
@@ -192,7 +197,10 @@ class VecExceptionGen(implicit p: Parameters) extends XSModule{
 
   private val wnEewIllegal = (vdWideningInst || narrowingInst || redWideningInst) && SEW === 3.U
 
-  private val eewIllegal = fpEewIllegal || intExtEewIllegal || wnEewIllegal
+  // Zvbaseband
+  private val zvbasebandEewIllegal = zvbasebandInst && SEW =/= 1.U
+
+  private val eewIllegal = fpEewIllegal || intExtEewIllegal || wnEewIllegal || zvbasebandInst
 
   // 4. EMUL Illegal
   private val lsEmulIllegal = (lsStrideInst || lsIndexInst) && (LMUL +& inst.WIDTH(1, 0) < SEW +& 1.U || LMUL +& inst.WIDTH(1, 0) > SEW +& 7.U)

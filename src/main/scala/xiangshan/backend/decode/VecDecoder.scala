@@ -12,6 +12,7 @@ import xiangshan.backend.fu.FuType
 import xiangshan._
 import yunsuan.{VfpuType, VipuType, VimacType, VpermType, VialuFixType, VfaluType, VmoveType, VfmaType, VfdivType, VfcvtType, VidivType, FcmpOpCode}
 import xiangshan.backend.decode.Zvbb._
+import xiangshan.backend.decode.Zvbaseband._
 
 abstract class VecDecode extends XSDecodeBase {
   def generate() : List[BitPat]
@@ -246,6 +247,12 @@ object VecDecoder extends DecodeConstants {
     VROL_VV         -> OPIVV(FuType.vialuF, VialuFixType.vrol_vv, T, F, F, UopSplitType.VEC_VVV),
     VROR_VV         -> OPIVV(FuType.vialuF, VialuFixType.vror_vv, T, F, F, UopSplitType.VEC_VVV),
     VWSLL_VV        -> OPIVV(FuType.vialuF, VialuFixType.vwsll_vv, T, F, F, UopSplitType.VEC_VVW),
+
+    // Zvbaseband
+    VSCMUL_VV       -> OPIVV(FuType.vimac, VimacType.vscmul, T, F, T, UopSplitType.VEC_VVV),
+    VSCMULCJ_VV     -> OPIVV(FuType.vimac, VimacType.vscmulcj, T, F, T, UopSplitType.VEC_VVV),
+    VSCMACC_VV      -> OPIVV(FuType.vimac, VimacType.vscmacc, T, F, T, UopSplitType.VEC_VVV),
+    VSCMACCCJ_VV    -> OPIVV(FuType.vimac, VimacType.vscmacccj, T, F, T, UopSplitType.VEC_VVV),
   )
 
   val opivx: Array[(BitPat, XSDecodeBase)] = Array(
