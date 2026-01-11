@@ -35,8 +35,7 @@ import xiangshan.backend.fu.vector.Bundles.{VType, Vl}
 import xiangshan.backend.fu.wrapper.CSRToDecode
 import xiangshan.backend.decode.Zimop._
 import yunsuan.{FcmpOpCode, VfaluType, VfcvtType, VfmaType, VfmaOpCode}
-import xiangshan.backend.decode.Zvbaseband.VSCMACC_VV
-import xiangshan.backend.decode.Zvbaseband.VSCMACCCJ_VV
+import xiangshan.backend.decode.Zvbaseband._
 
 /**
  * Abstract trait giving defaults and other relevant values to different Decode constants/

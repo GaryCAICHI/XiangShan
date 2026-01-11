@@ -200,7 +200,7 @@ class VecExceptionGen(implicit p: Parameters) extends XSModule{
   // Zvbaseband
   private val zvbasebandEewIllegal = zvbasebandInst && SEW =/= 1.U
 
-  private val eewIllegal = fpEewIllegal || intExtEewIllegal || wnEewIllegal || zvbasebandInst
+  private val eewIllegal = fpEewIllegal || intExtEewIllegal || wnEewIllegal || zvbasebandEewIllegal
 
   // 4. EMUL Illegal
   private val lsEmulIllegal = (lsStrideInst || lsIndexInst) && (LMUL +& inst.WIDTH(1, 0) < SEW +& 1.U || LMUL +& inst.WIDTH(1, 0) > SEW +& 7.U)
