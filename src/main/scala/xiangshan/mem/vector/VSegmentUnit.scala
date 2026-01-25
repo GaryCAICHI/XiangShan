@@ -212,7 +212,7 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
   val issueVlMax                      = instMicroOp.uopFlowNum // max elementIdx in vd
   val issueMaxIdxInIndex              = GenVLMAX(Mux(issueEmul.asSInt > 0.S, 0.U, issueEmul), issueEew(1, 0)) // index element index in index register
   val issueMaxIdxInIndexMask          = GenVlMaxMask(issueMaxIdxInIndex, elemIdxBits)
-  val issueMaxIdxInIndexLog2          = GenVLMAXLog2(Mux(issueEmul.asSInt > 0.S, 0.U, issueEmul), issueEew(1, 0))
+  val issueMaxIdxInIndexLog2          = RegNext(GenVLMAXLog2(Mux(issueEmul.asSInt > 0.S, 0.U, issueEmul), issueEew(1, 0)))
   val issueIndexIdx                   = segmentIdx & issueMaxIdxInIndexMask
   val segmentActive                   = (mask & UIntToOH(segmentIdx)).orR
 
@@ -396,9 +396,9 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
     instMicroOp.vstart                := 0.U
     instMicroOp.uopFlowNum            := uopFlowNum
     instMicroOp.uopFlowNumMask        := GenVlMaxMask(uopFlowNum, elemIdxBits) // for merge data
-    instMicroOp.vl                    := io.in.bits.src(vlIndice).asTypeOf(Vl())
+    instMicroOp.vl                    := io.in.bits.vl.get
     instMicroOp.exceptionVl.valid     := false.B
-    instMicroOp.exceptionVl.bits      := io.in.bits.src(vlIndice).asTypeOf(Vl())
+    instMicroOp.exceptionVl.bits      := io.in.bits.vl.get
     segmentOffset                     := 0.U
     instMicroOp.isFof                 := (fuOpType === VlduType.vleff) && FuType.isVSegLoad(io.in.bits.fuType)
     instMicroOp.isVSegLoad            := FuType.isVSegLoad(io.in.bits.fuType)
@@ -482,8 +482,8 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
   segmentTrigger.io.fromLoadStore.mask                  := 0.U
 
   val triggerAction = segmentTrigger.io.toLoadStore.triggerAction
-  val triggerDebugMode = TriggerAction.isDmode(triggerAction)
-  val triggerBreakpoint = TriggerAction.isExp(triggerAction)
+  val triggerDebugMode = RegEnable(TriggerAction.isDmode(triggerAction), false.B, state === s_tlb_req)
+  val triggerBreakpoint = RegEnable(TriggerAction.isExp(triggerAction), false.B, state === s_tlb_req)
 
   // tlb resp
   when(io.dtlb.resp.fire && state === s_wait_tlb_resp){
@@ -596,16 +596,18 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
 
 
   // HardwareError response will be one beat late
+  val rdcache_resp_error = if (EnableAccurateLoadError) io.rdcache.resp.bits.error_delayed else io.rdcache.resp.bits.tl_error_delayed.asUInt.orR
   when(
     (state === s_latch_and_merge_data || state === s_misalign_merge_data) &&
-    io.rdcache.resp.bits.error_delayed && GatedValidRegNext(io.csrCtrl.cache_error_enable) &&
+      rdcache_resp_error && GatedValidRegNext(io.csrCtrl.cache_error_enable) &&
     segmentActive
   ) {
     exception_pa := true.B
     instMicroOp.exception_pa := true.B
 
     when(canTriggerException) {
-      exceptionVec(hardwareError) := true.B
+      exceptionVec(hardwareError) := io.rdcache.resp.bits.tl_error_delayed.tl_corrupt && !io.rdcache.resp.bits.tl_error_delayed.tl_denied || EnableAccurateLoadError.B
+      exceptionVec(loadAccessFault)  := io.rdcache.resp.bits.tl_error_delayed.tl_denied && isVSegLoad
       instMicroOp.exceptionVstart := segmentIdx // for exception
     }.otherwise {
       instMicroOp.exceptionVl.valid := true.B
@@ -932,8 +934,8 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
       vls.isVecLoad := VlduType.isVecLd(fofBuffer.fuOpType)
       vls.isVlm := VlduType.isMasked(fofBuffer.fuOpType) && VlduType.isVecLd(fofBuffer.fuOpType)
     })
-    writebackOut.debugInfo := fofBuffer.debugInfo
-    writebackOut.debug_seqNum := fofBuffer.debug_seqNum
+    writebackOut.perfDebugInfo.foreach(_ := fofBuffer.perfDebugInfo)
+    writebackOut.debug_seqNum.foreach(_ := fofBuffer.debug_seqNum)
   }.otherwise{
     writebackOut.data := VecInit(Seq.fill(param.wbPathNum)(data(deqPtr.value)))
     writebackOut.pdest := uopq(deqPtr.value).uop.pdest
@@ -964,8 +966,8 @@ class VSegmentUnit(val param: ExeUnitParams)(implicit p: Parameters) extends VLS
       vls.isVlm := VlduType.isMasked(instMicroOp.uop.fuOpType) && VlduType.isVecLd(instMicroOp.uop.fuOpType)
     })
     writebackOut.debug := DontCare
-    writebackOut.debugInfo := uopq(deqPtr.value).uop.debugInfo
-    writebackOut.debug_seqNum := uopq(deqPtr.value).uop.debug_seqNum
+    writebackOut.perfDebugInfo.foreach(_ := uopq(deqPtr.value).uop.perfDebugInfo)
+    writebackOut.debug_seqNum.foreach(_ := uopq(deqPtr.value).uop.debug_seqNum)
   }
 
   io.uopwriteback.valid               := RegNext(writebackValid)

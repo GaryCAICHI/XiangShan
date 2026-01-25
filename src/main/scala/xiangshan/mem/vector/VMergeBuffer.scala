@@ -122,8 +122,8 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
       vls.isVecLoad := VlduType.isVecLd(source.uop.fuOpType)
       vls.isVlm := VlduType.isMasked(source.uop.fuOpType) && VlduType.isVecLd(source.uop.fuOpType)
     })
-    sink.debugInfo := source.uop.debugInfo
-    sink.debug_seqNum := source.uop.debug_seqNum
+    sink.perfDebugInfo.foreach(_ := source.uop.perfDebugInfo)
+    sink.debug_seqNum.foreach(_ := source.uop.debug_seqNum)
     sink
   }
   def ToLsqConnect(source: MBufferBundle): FeedbackToLsqIO = {
@@ -131,6 +131,8 @@ abstract class BaseVMergeBuffer(isVStore: Boolean=false)(implicit p: Parameters)
     val hasExp                               = ExceptionNO.selectByFu(source.exceptionVec, fuCfg).asUInt.orR
     sink.robidx                             := source.uop.robIdx
     sink.uopidx                             := source.uop.uopIdx
+    sink.sqIdx                              := source.uop.sqIdx
+    sink.lqIdx                              := source.uop.lqIdx
     sink.feedback(VecFeedbacks.COMMIT)      := !hasExp
     sink.feedback(VecFeedbacks.FLUSH)       := hasExp
     sink.feedback(VecFeedbacks.LAST)        := true.B
@@ -514,8 +516,8 @@ class VSMergeBufferImp(implicit p: Parameters) extends BaseVMergeBuffer(isVStore
       vls.isVecLoad := VlduType.isVecLd(source.uop.fuOpType)
       vls.isVlm := VlduType.isMasked(source.uop.fuOpType) && VlduType.isVecLd(source.uop.fuOpType)
     })
-    sink.debugInfo := source.uop.debugInfo
-    sink.debug_seqNum := source.uop.debug_seqNum
+    sink.perfDebugInfo.foreach(_ := source.uop.perfDebugInfo)
+    sink.debug_seqNum.foreach(_ := source.uop.debug_seqNum)
     sink
   }
 }

@@ -4,7 +4,6 @@ import chisel3._
 import chisel3.experimental.SourceInfo
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
-import freechips.rocketchip.rocket.CSRs
 import utility.{SignExt, PerfEvent}
 import xiangshan.backend.fu.NewCSR.CSRBundles._
 import xiangshan.backend.fu.NewCSR.CSRDefines._
@@ -16,6 +15,7 @@ import xiangshan.backend.fu.PerfCounterIO
 import xiangshan.backend.fu.NewCSR.CSRConfig._
 import xiangshan.backend.fu.NewCSR.CSRFunc._
 import xiangshan.backend.fu.util.CSRConst._
+import xiangshan.backend.decode.isa.CSRs
 
 import scala.collection.immutable.SeqMap
 
@@ -353,9 +353,9 @@ trait MachineLevel { self: NewCSR =>
     }).setAddr(CSRs.mhpmcounter3 - 3 + num)
   )
 
-  val mvendorid = Module(new CSRModule("Mvendorid", new CSRBundle {
-    val ALL = RO(63, 0)
-  }))
+  // JEDEC JEP106 Manufacturer ID: 
+  //   Bank 17 (16 continuations), Offset 0x6F (111)
+  val mvendorid = Module(new CSRModule("Mvendorid", new MvendoridBundle))
     .setAddr(CSRs.mvendorid)
 
   // architecture id for XiangShan is 25
@@ -701,6 +701,19 @@ class MEnvCfg extends EnvCfg {
 
 object MarchidField extends CSREnum with ROApply {
   val XSArchid = Value(25.U)
+}
+
+class MvendoridBundle extends CSRBundle {
+  val Bank   = MvidBankField(31, 7).withReset(MvidBankField.BANK)
+  val Offset = MvidOffsetField(6, 0).withReset(MvidOffsetField.OFFSET)
+}
+
+object MvidBankField extends CSREnum with ROApply {
+  val BANK = Value(16.U)
+}
+
+object MvidOffsetField extends CSREnum with ROApply {
+  val OFFSET = Value(0x6F.U)
 }
 
 class MieToHie extends Bundle {

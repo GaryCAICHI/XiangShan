@@ -79,7 +79,9 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
       val traceCommitInfo = new TraceBundle(hasIaddr = false, CommitWidth, IretireWidthCommited)
     }
     val rabCommits = Output(new RabCommitIO)
+    val vlCommits = Output(new VlCommitBundle(RabCommitWidth))
     val diffCommits = if (backendParams.basicDebugEn) Some(Output(new DiffCommitIO)) else None
+    val diffVlCommits = Option.when(backendParams.basicDebugEn)(new DiffVlCommitBundle(CommitWidth))
     val isVsetFlushPipe = Output(Bool())
     val lsq = new RobLsqIO
     val robDeqPtr = Output(new RobPtr)
@@ -144,13 +146,14 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   val redirectWBs = io.writeback.filter(x => x.bits.redirect.nonEmpty).toSeq
   val vxsatWBs = io.exuWriteback.filter(x => x.bits.vxsat.nonEmpty).toSeq
   val branchWBs = io.exuWriteback.filter(_.bits.params.hasBrhFu).toSeq
-  val jmpWBs = io.exuWriteback.filter(_.bits.params.hasJmpFu).toSeq
+  val isBrhOrJmpWBs = io.exuWriteback.filter(x => (x.bits.params.hasBrhFu || x.bits.params.hasJmpFu)).toSeq
   val csrWBs = io.exuWriteback.filter(x => x.bits.params.hasCSR).toSeq
 
-  PerfCCT.tick(clock, reset)
-
-  io.exuWriteback.zipWithIndex.foreach{ case (wb, i) =>
-    PerfCCT.updateInstPos(wb.bits.debug_seqNum, PerfCCT.InstPos.AtWriteVal.id.U, wb.valid, clock, reset)
+  if (backendParams.debugEn){
+    PerfCCT.tick(clock, reset)
+    io.exuWriteback.zipWithIndex.foreach{ case (wb, i) =>
+      PerfCCT.updateInstPos(wb.bits.debug_seqNum.get, PerfCCT.InstPos.AtWriteVal.id.U, wb.valid, clock, reset)
+    }
   }
 
   val numExuWbPorts = exuWBs.length
@@ -394,7 +397,9 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
 
   // pipe rab commits for better timing and area
   io.rabCommits := RegNext(rab.io.commits)
+  io.vlCommits := RegNext(vtypeBuffer.io.commits)
   io.diffCommits.foreach(_ := rab.io.diffCommits.get)
+  io.diffVlCommits.foreach(_ := vtypeBuffer.io.diffCommits.get)
 
   /**
    * connection of [[vtypeBuffer]]
@@ -407,8 +412,8 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     sink.bits := source.bits
   }
 
-  private val commitIsVTypeVec = VecInit(io.commits.commitValid.zip(io.commits.info).map { case (valid, info) => io.commits.isCommit && valid && info.isVset })
-  private val walkIsVTypeVec = VecInit(io.commits.walkValid.zip(walkInfo).map { case (valid, info) => io.commits.isWalk && valid && info.isVset })
+  private val commitIsVTypeVec = VecInit(io.commits.commitValid.zip(io.commits.info).map { case (valid, info) => io.commits.isCommit && valid && info.needVTB })
+  private val walkIsVTypeVec = VecInit(io.commits.walkValid.zip(walkInfo).map { case (valid, info) => io.commits.isWalk && valid && info.needVTB })
   vtypeBuffer.io.fromRob.commitSize := PopCount(commitIsVTypeVec)
   vtypeBuffer.io.fromRob.walkSize := PopCount(walkIsVTypeVec)
   vtypeBuffer.io.snpt := io.snpt
@@ -455,13 +460,13 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
       val enqIndex = allocatePtrVec(i).value
       // store uop in data module and debug_microOp Vec
       debug_microOp(enqIndex) := enqUop
-      debug_microOp(enqIndex).debugInfo.dispatchTime := timer
-      debug_microOp(enqIndex).debugInfo.enqRsTime := timer
-      debug_microOp(enqIndex).debugInfo.selectTime := timer
-      debug_microOp(enqIndex).debugInfo.issueTime := timer
-      debug_microOp(enqIndex).debugInfo.writebackTime := timer
-      debug_microOp(enqIndex).debugInfo.tlbFirstReqTime := timer
-      debug_microOp(enqIndex).debugInfo.tlbRespTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.dispatchTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.enqRsTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.selectTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.issueTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.writebackTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.tlbFirstReqTime := timer
+      debug_microOp(enqIndex).perfDebugInfo.tlbRespTime := timer
       debug_lsInfo(enqIndex) := DebugLsInfo.init
       debug_lsTopdownInfo(enqIndex) := LsTopdownInfo.init
       debug_lqIdxValid(enqIndex) := false.B
@@ -561,13 +566,14 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     when(wb.valid) {
       debug_exuData(wbIdx) := wb.bits.data(0)
       debug_exuDebug(wbIdx) := wb.bits.debug
-      debug_microOp(wbIdx).debugInfo.enqRsTime := wb.bits.debugInfo.enqRsTime
-      debug_microOp(wbIdx).debugInfo.selectTime := wb.bits.debugInfo.selectTime
-      debug_microOp(wbIdx).debugInfo.issueTime := wb.bits.debugInfo.issueTime
-      debug_microOp(wbIdx).debugInfo.writebackTime := wb.bits.debugInfo.writebackTime
-      debug_microOp(wbIdx).debugInfo.tlbFirstReqTime := wb.bits.debugInfo.tlbFirstReqTime
-      debug_microOp(wbIdx).debugInfo.tlbRespTime := wb.bits.debugInfo.tlbRespTime
-
+      wb.bits.perfDebugInfo.foreach { x =>
+        debug_microOp(wbIdx).perfDebugInfo.enqRsTime := x.enqRsTime
+        debug_microOp(wbIdx).perfDebugInfo.selectTime := x.selectTime
+        debug_microOp(wbIdx).perfDebugInfo.issueTime := x.issueTime
+        debug_microOp(wbIdx).perfDebugInfo.writebackTime := x.writebackTime
+        debug_microOp(wbIdx).perfDebugInfo.tlbFirstReqTime := x.tlbFirstReqTime
+        debug_microOp(wbIdx).perfDebugInfo.tlbRespTime := x.tlbRespTime
+      }
       // debug for lqidx and sqidx
       debug_microOp(wbIdx).lqIdx := wb.bits.lqIdx.getOrElse(0.U.asTypeOf(new LqPtr))
       debug_microOp(wbIdx).sqIdx := wb.bits.sqIdx.getOrElse(0.U.asTypeOf(new SqPtr))
@@ -1002,7 +1008,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
   // if the first uop of an instruction is valid , write writebackedCounter
   val uopEnqValidSeq = io.enq.req.map(req => io.enq.canAccept && req.valid)
   val instEnqValidSeq = io.enq.req.map(req => io.enq.canAccept && req.valid && req.bits.firstUop)
-  val enqNeedWriteRFSeq = io.enq.req.map(_.bits.needWriteRf)
+  val enqNeedWriteRFSeq = io.enq.req.map(_.bits.needEnqRab)
   val enqHasExcpSeq = io.enq.req.map(_.bits.hasException)
   val enqRobIdxSeq = io.enq.req.map(req => req.bits.robIdx.value)
   val enqUopNumVec = VecInit(io.enq.req.map(req => req.bits.numUops))
@@ -1134,8 +1140,8 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
       needUpdate(i).traceBlockInPipe.itype := Itype.Taken
     }
   }
-  robBanksRdataThisLineUpdate := VecInit(needUpdate.take(8))
-  robBanksRdataNextLineUpdate := VecInit(needUpdate.drop(8))
+  robBanksRdataThisLineUpdate := VecInit(needUpdate.take(bankNum))
+  robBanksRdataNextLineUpdate := VecInit(needUpdate.drop(bankNum))
   // end update robBanksRdata
 
   // interrupt_safe
@@ -1384,14 +1390,14 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     XSPerfAccumulate(s"commitCompressCnt${i}", PopCount(io.commits.commitValid.zip(instrSizeCommit).map { case (valid, instrSize) => io.commits.isCommit && valid && instrSize === i.U }))
   )
   XSPerfAccumulate("compressSize", io.commits.commitValid.zip(instrSizeCommit).map { case (valid, instrSize) => Mux(io.commits.isCommit && valid && instrSize > 1.U, instrSize, 0.U) }.reduce(_ +& _))
-  val dispatchLatency = commitDebugUop.map(uop => uop.debugInfo.dispatchTime - uop.debugInfo.renameTime)
-  val enqRsLatency = commitDebugUop.map(uop => uop.debugInfo.enqRsTime - uop.debugInfo.dispatchTime)
-  val selectLatency = commitDebugUop.map(uop => uop.debugInfo.selectTime - uop.debugInfo.enqRsTime)
-  val issueLatency = commitDebugUop.map(uop => uop.debugInfo.issueTime - uop.debugInfo.selectTime)
-  val executeLatency = commitDebugUop.map(uop => uop.debugInfo.writebackTime - uop.debugInfo.issueTime)
-  val rsFuLatency = commitDebugUop.map(uop => uop.debugInfo.writebackTime - uop.debugInfo.enqRsTime)
-  val commitLatency = commitDebugUop.map(uop => timer - uop.debugInfo.writebackTime)
-  val tlbLatency = commitDebugUop.map(uop => uop.debugInfo.tlbRespTime - uop.debugInfo.tlbFirstReqTime)
+  val dispatchLatency = commitDebugUop.map(uop => uop.perfDebugInfo.dispatchTime - uop.perfDebugInfo.renameTime)
+  val enqRsLatency = commitDebugUop.map(uop => uop.perfDebugInfo.enqRsTime - uop.perfDebugInfo.dispatchTime)
+  val selectLatency = commitDebugUop.map(uop => uop.perfDebugInfo.selectTime - uop.perfDebugInfo.enqRsTime)
+  val issueLatency = commitDebugUop.map(uop => uop.perfDebugInfo.issueTime - uop.perfDebugInfo.selectTime)
+  val executeLatency = commitDebugUop.map(uop => uop.perfDebugInfo.writebackTime - uop.perfDebugInfo.issueTime)
+  val rsFuLatency = commitDebugUop.map(uop => uop.perfDebugInfo.writebackTime - uop.perfDebugInfo.enqRsTime)
+  val commitLatency = commitDebugUop.map(uop => timer - uop.perfDebugInfo.writebackTime)
+  val tlbLatency = commitDebugUop.map(uop => uop.perfDebugInfo.tlbRespTime - uop.perfDebugInfo.tlbFirstReqTime)
 
   def latencySum(cond: Seq[Bool], latency: Seq[UInt]): UInt = {
     cond.zip(latency).map(x => Mux(x._1, x._2, 0.U)).reduce(_ +& _)
@@ -1448,15 +1454,15 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
         debug_instData.robIdx := idx
         debug_instData.dvaddr := wb.bits.debug.vaddr
         debug_instData.dpaddr := wb.bits.debug.paddr
-        debug_instData.issueTime := wb.bits.debugInfo.issueTime
-        debug_instData.writebackTime := wb.bits.debugInfo.writebackTime
-        debug_instData.dispatchLatency := wb.bits.debugInfo.dispatchTime - wb.bits.debugInfo.renameTime
-        debug_instData.enqRsLatency := wb.bits.debugInfo.enqRsTime - wb.bits.debugInfo.dispatchTime
-        debug_instData.selectLatency := wb.bits.debugInfo.selectTime - wb.bits.debugInfo.enqRsTime
-        debug_instData.issueLatency := wb.bits.debugInfo.issueTime - wb.bits.debugInfo.selectTime
-        debug_instData.executeLatency := wb.bits.debugInfo.writebackTime - wb.bits.debugInfo.issueTime
-        debug_instData.rsFuLatency := wb.bits.debugInfo.writebackTime - wb.bits.debugInfo.enqRsTime
-        debug_instData.tlbLatency := wb.bits.debugInfo.tlbRespTime - wb.bits.debugInfo.tlbFirstReqTime
+        debug_instData.issueTime := wb.bits.perfDebugInfo.get.issueTime
+        debug_instData.writebackTime := wb.bits.perfDebugInfo.get.writebackTime
+        debug_instData.dispatchLatency := wb.bits.perfDebugInfo.get.dispatchTime - wb.bits.perfDebugInfo.get.renameTime
+        debug_instData.enqRsLatency := wb.bits.perfDebugInfo.get.enqRsTime - wb.bits.perfDebugInfo.get.dispatchTime
+        debug_instData.selectLatency := wb.bits.perfDebugInfo.get.selectTime - wb.bits.perfDebugInfo.get.enqRsTime
+        debug_instData.issueLatency := wb.bits.perfDebugInfo.get.issueTime - wb.bits.perfDebugInfo.get.selectTime
+        debug_instData.executeLatency := wb.bits.perfDebugInfo.get.writebackTime - wb.bits.perfDebugInfo.get.issueTime
+        debug_instData.rsFuLatency := wb.bits.perfDebugInfo.get.writebackTime - wb.bits.perfDebugInfo.get.enqRsTime
+        debug_instData.tlbLatency := wb.bits.perfDebugInfo.get.tlbRespTime - wb.bits.perfDebugInfo.get.tlbFirstReqTime
         debug_instData.exceptType := Cat(wb.bits.exceptionVec.getOrElse(ExceptionVec(false.B)))
         debug_instData.lsInfo := debug_lsInfo(idx)
         // debug_instData.globalID := wb.bits.uop.ctrl.debug_globalID
@@ -1639,13 +1645,12 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
       port.pc := debug_microOp(port.robidx.value).pc
     }
   }
-
-  val brhMispred = PopCount(branchWBs.map(wb => wb.valid & wb.bits.redirect.get.valid))
-  val jmpMispred = PopCount(jmpWBs.map(wb => wb.valid && wb.bits.redirect.get.valid))
-  val brhJump    = PopCount((branchWBs ++ jmpWBs).map(wb => wb.valid))
-  val misPred = brhMispred +& jmpMispred
+ 
+  val misPred = io.redirect.valid && io.redirect.bits.isMisPred
+  val brhJump = PopCount(isBrhOrJmpWBs.map(wb => wb.valid))
 
   XSPerfAccumulate("br_mis_pred", misPred)
+  XSPerfAccumulate("total_flush", io.redirect.valid)
 
   val commitLoadVec = VecInit(commitLoadValid)
   val commitBranchVec = VecInit(commitBranchValid)
@@ -1669,7 +1674,7 @@ class RobImp(override val wrapper: Rob)(implicit p: Parameters, params: BackendP
     ("rob_4_4_valid          ", numValidEntries > (RobSize * 3 / 4).U),
     ("BRANCH_JUMP            ", brhJump),
     ("BR_MIS_PRED            ", misPred),
-    ("TOTAL_FLUSH            ", io.flushOut.valid)
+    ("TOTAL_FLUSH            ", io.redirect.valid)
   )
   generatePerfEvent()
 

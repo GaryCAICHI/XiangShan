@@ -260,6 +260,20 @@ object Redirect extends HasCircularQueuePtrHelper {
     )).andR))
     resultOnehot
   }
+
+  def findOldestRedirect(in1: Valid[Redirect], in2: Valid[Redirect]): Valid[Redirect] = {
+    val out = Wire(chiselTypeOf(in1))
+    when(in1.valid && !in2.valid) {
+      out := in1
+    }.elsewhen(!in1.valid && in2.valid) {
+      out := in2
+    }.elsewhen(in1.valid && in2.valid) {
+      out := Mux(in1.bits.robIdx.isAfter(in1.bits.robIdx, in2.bits.robIdx), in2, in1)
+    }.otherwise(
+      out := in1
+    )
+    out
+  }
 }
 
 class Resolve(implicit p: Parameters) extends XSBundle {
@@ -327,6 +341,11 @@ class DiffCommitIO(implicit p: Parameters) extends XSBundle {
   val info = Vec(CommitWidth * MaxUopSize, new RabCommitInfo)
 }
 
+class DiffVlCommitBundle(commitWidth: Int)(implicit p: Parameters) extends XSBundle {
+  val commitValid = Vec(commitWidth, Bool())
+  val pdestVl = Vec(commitWidth, UInt(VlPhyRegIdxWidth.W))
+}
+
 class RobCommitInfo(implicit p: Parameters) extends RobCommitEntryBundle
 
 class RobCommitIO(implicit p: Parameters) extends XSBundle {
@@ -368,6 +387,20 @@ class RabCommitIO(implicit p: Parameters) extends XSBundle {
 
   def hasWalkInstr: Bool = isWalk && walkValid.asUInt.orR
   def hasCommitInstr: Bool = isCommit && commitValid.asUInt.orR
+}
+
+/**
+ * This bundle is used to pass commit and walk vl preg info to RAT
+ */
+class VlCommitBundle(commitWidth: Int)(implicit p: Parameters) extends XSBundle {
+  val isCommit = Bool()
+  val commitValid = Vec(commitWidth, Bool())
+
+  val isWalk = Bool()
+  // valid bits optimized for walk
+  val walkValid = Vec(commitWidth, Bool())
+
+  val pdestVl = Vec(commitWidth, UInt(VlPhyRegIdxWidth.W))
 }
 
 class SnapshotPort(implicit p: Parameters) extends XSBundle {

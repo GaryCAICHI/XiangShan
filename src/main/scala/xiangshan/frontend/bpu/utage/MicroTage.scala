@@ -28,6 +28,7 @@ import xiangshan.frontend.bpu.BpuTrain
 import xiangshan.frontend.bpu.CompareMatrix
 import xiangshan.frontend.bpu.FoldedHistoryInfo
 import xiangshan.frontend.bpu.HasFastTrainIO
+import xiangshan.frontend.bpu.Prediction
 import xiangshan.frontend.bpu.SaturateCounter
 import xiangshan.frontend.bpu.history.phr.PhrAllFoldedHistories
 
@@ -36,10 +37,11 @@ import xiangshan.frontend.bpu.history.phr.PhrAllFoldedHistories
  */
 class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageParameters with Helpers {
   class MicroTageIO(implicit p: Parameters) extends BasePredictorIO with HasFastTrainIO {
-    val foldedPathHist:         PhrAllFoldedHistories      = Input(new PhrAllFoldedHistories(AllFoldedHistoryInfo))
-    val foldedPathHistForTrain: PhrAllFoldedHistories      = Input(new PhrAllFoldedHistories(AllFoldedHistoryInfo))
-    val prediction:             Valid[MicroTagePrediction] = Output(Valid(new MicroTagePrediction))
-    val meta:                   Valid[MicroTageMeta]       = Output(Valid(new MicroTageMeta))
+    val foldedPathHist:         PhrAllFoldedHistories  = Input(new PhrAllFoldedHistories(AllFoldedHistoryInfo))
+    val foldedPathHistForTrain: PhrAllFoldedHistories  = Input(new PhrAllFoldedHistories(AllFoldedHistoryInfo))
+    val abtbPrediction:         Vec[Valid[Prediction]] = Input(Vec(NumAheadBtbPredictionEntries, Valid(new Prediction)))
+    val prediction: Valid[MicroTagePrediction] = Output(Valid(new MicroTagePrediction))
+    val meta:       Valid[MicroTageMeta]       = Output(Valid(new MicroTageMeta))
   }
   val io: MicroTageIO = IO(new MicroTageIO)
   io.resetDone  := true.B
@@ -57,12 +59,18 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
       )).io
       t
   }
-  private val tickCounter = RegInit(0.U((TickWidth + 1).W))
+  private val lowTickCounter  = RegInit(0.U((LowTickWidth + 1).W))
+  private val highTickCounter = RegInit(0.U((HighTickWidth + 1).W))
   // Predict
-  tables.foreach { t =>
-    t.req.startPc        := io.startPc
-    t.req.foldedPathHist := io.foldedPathHist
-    t.usefulReset        := tickCounter(TickWidth)
+  tables.zipWithIndex.foreach {
+    case (t, idx) =>
+      t.req.startPc        := io.startPc
+      t.req.foldedPathHist := io.foldedPathHist
+      idx match {
+        case 0 => t.usefulReset := lowTickCounter(LowTickWidth)
+        case 1 => t.usefulReset := highTickCounter(HighTickWidth)
+        case _ => t.usefulReset := false.B
+      }
   }
   private val takenCases       = tables.reverse.map(t => t.resp.valid -> t.resp.bits.taken)
   private val cfiPositionCases = tables.reverse.map(t => t.resp.valid -> t.resp.bits.cfiPosition)
@@ -73,8 +81,8 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   private val histTableTakenMap       = tables.map(_.resp.bits.taken)
   private val histTableUsefulVec      = VecInit(tables.map(_.resp.bits.useful))
   private val histTableCfiPositionVec = VecInit(tables.map(_.resp.bits.cfiPosition))
-  private val choseTableTakenCtr      = MuxCase(0.U.asTypeOf(new SaturateCounter(TakenCtrWidth)), takenCtrCase)
-  private val choseTableUseful        = MuxCase(0.U.asTypeOf(new SaturateCounter(UsefulWidth)), usefulCase)
+  private val choseTableTakenCtr      = MuxCase(TakenCounter.Zero, takenCtrCase)
+  private val choseTableUseful        = MuxCase(UsefulCounter.Zero, usefulCase)
 
   private val finalPredTaken       = MuxCase(false.B, takenCases)
   private val finalPredCfiPosition = MuxCase(0.U(CfiPositionWidth.W), cfiPositionCases)
@@ -86,9 +94,9 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
 // but it's a double-edged sword: with limited capacity, entries may be evicted
 // before reaching saturation—making their unsaturated states potentially useless.
 // This trade-off needs empirical validation.
-  // prediction.valid := histTableHitMap.reduce(_ || _) &&
-  //   (choseTableTakenCtr.isSaturatePositive || choseTableTakenCtr.isSaturateNegative)
-  prediction.valid            := false.B
+  prediction.valid := io.enable && histTableHitMap.reduce(_ || _) &&
+    (choseTableTakenCtr.isSaturatePositive || choseTableTakenCtr.isSaturateNegative)
+  // prediction.valid            := false.B
   prediction.bits.taken       := finalPredTaken && choseTableTakenCtr.isSaturatePositive
   prediction.bits.cfiPosition := finalPredCfiPosition
 
@@ -99,11 +107,24 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   predMeta.bits.histTableCfiPositionVec := histTableCfiPositionVec
   predMeta.bits.baseTaken               := false.B // no use, only for placeholder.
   predMeta.bits.baseCfiPosition         := 0.U     // no use, only for placeholder.
+
+  private val s1_abtbCondTakenMask = VecInit(io.abtbPrediction.map { pred =>
+    pred.valid && pred.bits.taken && pred.bits.attribute.isConditional
+  })
+  private val s1_abtbCondTaken          = s1_abtbCondTakenMask.reduce(_ || _)
+  private val s1_abtbCompareMatrix      = CompareMatrix(VecInit(io.abtbPrediction.map(_.bits.cfiPosition)))
+  private val s1_abtbFirstTakenBranchOH = s1_abtbCompareMatrix.getLeastElementOH(s1_abtbCondTakenMask)
+  private val s1_abtbFirstTakenBranch   = Mux1H(s1_abtbFirstTakenBranchOH, io.abtbPrediction)
+
+  private val s1_meta = RegEnable(predMeta, 0.U.asTypeOf(Valid(new MicroTageMeta)), io.stageCtrl.s0_fire)
+  s1_meta.bits.baseTaken       := s1_abtbCondTaken
+  s1_meta.bits.baseCfiPosition := s1_abtbFirstTakenBranch.bits.cfiPosition
+
   io.prediction := RegEnable(prediction, 0.U.asTypeOf(Valid(new MicroTagePrediction)), io.stageCtrl.s0_fire)
-  io.meta       := RegEnable(predMeta, 0.U.asTypeOf(Valid(new MicroTageMeta)), io.stageCtrl.s0_fire)
+  io.meta       := s1_meta
 
   // ------------ MicroTage is only concerned with conditional branches ---------- //
-  private val t0_fire                    = io.fastTrain.get.valid
+  private val t0_fire                    = io.fastTrain.get.valid && io.enable
   private val t0_trainMeta               = io.fastTrain.get.bits.utageMeta
   private val t0_trainData               = io.fastTrain.get.bits.finalPrediction
   private val t0_trainStartPc            = io.fastTrain.get.bits.startPc
@@ -131,14 +152,16 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   )
 
   private val t0_histMissHitMisPred =
-    !t0_predHit && t0_trainData.attribute.isConditional && t0_trainData.taken && io.fastTrain.get.bits.hasOverride
+    !t0_predHit && t0_trainData.attribute.isConditional &&
+      t0_trainData.taken && t0_fire && io.fastTrain.get.bits.hasOverride
 
   private val t0_misPred             = t0_histHitMisPred || t0_histMissHitMisPred
   private val t0_histTableNeedAlloc  = t0_misPred && t0_fire
   private val t0_histTableNeedUpdate = t0_predHit && t0_fire
-  private val t0_updateTaken         = (t0_predCfiPosition === t0_trainData.cfiPosition) && t0_trainData.taken
-  private val t0_updateCfiPosition   = t0_predCfiPosition
-  private val t0_actualTaken         = t0_trainData.attribute.isConditional && t0_trainData.taken
+  private val t0_updateTaken =
+    (t0_predCfiPosition === t0_trainData.cfiPosition) && t0_trainData.taken && t0_trainData.attribute.isConditional
+  private val t0_updateCfiPosition = t0_predCfiPosition
+  private val t0_actualTaken       = t0_trainData.attribute.isConditional && t0_trainData.taken
   private val t0_actualCfiPosition =
     Mux(t0_trainData.attribute.isConditional, t0_trainData.cfiPosition, t0_predCfiPosition)
 
@@ -152,10 +175,16 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   private val normalAllocMask      = PriorityEncoderOH(allocCandidateMask)
   private val t0_allocMask         = Mux(t0_fastAllocMask.orR, t0_fastAllocMask, normalAllocMask)
 
-  when(tickCounter(TickWidth)) {
-    tickCounter := 0.U
+  when(lowTickCounter(LowTickWidth)) {
+    lowTickCounter := 0.U
   }.elsewhen((t0_allocMask === 0.U) && t0_histTableNeedAlloc && t0_fire) {
-    tickCounter := tickCounter + 1.U
+    lowTickCounter := lowTickCounter + 1.U
+  }
+
+  when(highTickCounter(HighTickWidth)) {
+    highTickCounter := 0.U
+  }.elsewhen((t0_allocMask === 0.U) && t0_histTableNeedAlloc && t0_fire) {
+    highTickCounter := highTickCounter + 1.U
   }
 
   // ------------------------ Consistency Check Between Base Table and Hist Table Predictions ----------------------
@@ -166,7 +195,8 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   private val baseGTNotMatch =
     (t0_baseCfiPosition > t0_predCfiPosition) && ((!t0_baseTaken && t0_predTaken) || (t0_baseTaken && t0_predTaken))
 
-  private val fastTrainHasPredBr   = t0_predCfiPosition <= t0_trainData.cfiPosition
+  private val fastTrainHasPredBr = (t0_predCfiPosition === t0_trainData.cfiPosition) ||
+    ((t0_predCfiPosition < t0_trainData.cfiPosition) && !t0_trainData.attribute.isConditional)
   private val baseNotMatchHistPred = baseEQNotMatch || baseLTNotMatch || baseGTNotMatch
 
 // Allocation policy:
@@ -246,9 +276,16 @@ class MicroTage(implicit p: Parameters) extends BasePredictor with HasMicroTageP
   private val trainIdx0 = debug_tableMetas(0).debug_idx
   private val trainTag0 = debug_tableMetas(0).debug_tag
 
+  private val positionLT = t0_predCfiPosition < t0_trainData.cfiPosition
+  private val positionGT = t0_predCfiPosition > t0_trainData.cfiPosition
+  private val positionEQ = t0_predCfiPosition === t0_trainData.cfiPosition
   XSPerfAccumulate("train_needAlloc", t0_fire && t0_histTableNeedAlloc)
   XSPerfAccumulate("train_needUpdate", t0_fire && t0_histTableNeedUpdate)
   XSPerfAccumulate("train_histHitMisPred", t0_fire && t0_histHitMisPred)
+  XSPerfAccumulate("train_histHitMisPred_LT", t0_fire && t0_histHitMisPred && positionLT)
+  XSPerfAccumulate("train_histHitMisPred_GT", t0_fire && t0_histHitMisPred && positionGT)
+  XSPerfAccumulate("train_histHitMisPred_EQ", t0_fire && t0_histHitMisPred && positionEQ)
+  XSPerfAccumulate("train_missHit_needAlloc", t0_fire && t0_histMissHitMisPred)
   if (EnableTraceAndDebug) {
     XSPerfAccumulate(
       "train_useMicroTage_and_override_fromFastTrain",

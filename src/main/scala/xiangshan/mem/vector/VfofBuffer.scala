@@ -63,7 +63,7 @@ class VfofBuffer(val param: ExeUnitParams)(implicit p: Parameters) extends VLSUM
   when(enqValid && !enqNeedCancel) {
     when(!valid){
       entries.uop           := enqBits.toDynInst()
-      entries.vl            := enqBits.src(vlIndice).asTypeOf(Vl())
+      entries.vl            := enqBits.vl.get
       entries.hasException  := false.B
     }.elsewhen(valid && enqIsFixVl){
       entries.uop     := enqBits.toDynInst()
@@ -140,7 +140,7 @@ class VfofBuffer(val param: ExeUnitParams)(implicit p: Parameters) extends VLSUM
   io.uopWriteback.valid := valid && entries.uop.vpu.lastUop && entries.uop.vpu.isVleff && !needRedirect
   io.uopWriteback.bits := 0.U.asTypeOf(new ExuOutput(param))
   io.uopWriteback.bits.data := VecInit(Seq.fill(param.wbPathNum)(entries.vl))
-  io.uopWriteback.bits.pdest := entries.uop.pdest
+  io.uopWriteback.bits.pdestVl.get := entries.uop.pdestVl
   io.uopWriteback.bits.robIdx := entries.uop.robIdx
   io.uopWriteback.bits.intWen.foreach(_ := entries.uop.rfWen)
   io.uopWriteback.bits.fpWen.foreach(_ := entries.uop.fpWen)
@@ -155,7 +155,7 @@ class VfofBuffer(val param: ExeUnitParams)(implicit p: Parameters) extends VLSUM
     vls.vpu.vl := entries.vl
     vls.vpu.vmask := Fill(VLEN, 1.U)
   })
-  io.uopWriteback.bits.debugInfo := entries.uop.debugInfo
-  io.uopWriteback.bits.debug_seqNum := entries.uop.debug_seqNum
+  io.uopWriteback.bits.perfDebugInfo.foreach(_ := entries.uop.perfDebugInfo)
+  io.uopWriteback.bits.debug_seqNum.foreach(_ := entries.uop.debug_seqNum)
 
 }

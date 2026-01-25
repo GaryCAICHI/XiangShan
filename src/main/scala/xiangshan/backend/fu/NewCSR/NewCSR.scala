@@ -3,7 +3,6 @@ package xiangshan.backend.fu.NewCSR
 import chisel3._
 import chisel3.util._
 import difftest._
-import freechips.rocketchip.rocket.CSRs
 import org.chipsalliance.cde.config.Parameters
 import top.{ArgParser, Generator}
 import utility._
@@ -21,6 +20,7 @@ import xiangshan.backend.fu.PerfCounterIO
 import xiangshan.backend.fu.util.CSRConst
 import xiangshan.ExceptionNO._
 import xiangshan.backend.trace._
+import xiangshan.backend.decode.isa.CSRs
 
 import scala.collection.immutable.SeqMap
 
@@ -90,8 +90,6 @@ class NewCSROutput(implicit p: Parameters) extends Bundle {
   val EX_VI = Bool()
   val flushPipe = Bool()
   val rData = UInt(64.W)
-  val targetPcUpdate = Bool()
-  val targetPc = new TargetPCBundle
   val regOut = UInt(64.W)
   // perf
   val isPerfCnt = Bool()
@@ -227,6 +225,9 @@ class NewCSR(implicit val p: Parameters) extends Module
     val fetchMalTval = Input(UInt(XLEN.W))
 
     val distributedWenLegal = Output(Bool())
+
+    val trapTargetPc = ValidIO(new TargetPCBundle)
+    val xretTargetPc = ValidIO(new TargetPCBundle)
   })
 
   val toAIA   = IO(Output(new CSRToAIABundle))
@@ -350,12 +351,8 @@ class NewCSR(implicit val p: Parameters) extends Module
 
   // interrupt
   val nmip = RegInit(new NonMaskableIRPendingBundle, (new NonMaskableIRPendingBundle).init)
-  when(nonMaskableIRP.NMI_43) {
-    nmip.NMI_43 := true.B
-  }
-  when(nonMaskableIRP.NMI_31) {
-    nmip.NMI_31 := true.B
-  }
+  nmip.NMI_43 := nonMaskableIRP.NMI_43
+  nmip.NMI_31 := nonMaskableIRP.NMI_31
 
   val intrMod = Module(new InterruptFilter)
   intrMod.io.in.privState := privState
@@ -398,11 +395,6 @@ class NewCSR(implicit val p: Parameters) extends Module
   val virtualInterruptIsHvictlInject = RegEnable(intrMod.io.out.virtualInterruptIsHvictlInject, false.B, intrMod.io.out.interruptVec.valid)
   val irToHS = RegEnable(intrMod.io.out.irToHS, false.B, intrMod.io.out.interruptVec.valid)
   val irToVS = RegEnable(intrMod.io.out.irToVS, false.B, intrMod.io.out.interruptVec.valid)
-
-  when(hasTrap && trapIsInterrupt && nmi) {
-    nmip.NMI_31 := nmip.NMI_31 & !UIntToOH(intrVec, 64)(NonMaskableIRNO.NMI_31)
-    nmip.NMI_43 := nmip.NMI_43 & !UIntToOH(intrVec, 64)(NonMaskableIRNO.NMI_43)
-  }
 
   val trapHandleMod = Module(new TrapHandleModule)
 
@@ -607,7 +599,7 @@ class NewCSR(implicit val p: Parameters) extends Module
         m.robCommit.vsDirty := GatedValidRegNext(io.fromRob.commit.vsDirty)
         m.robCommit.vxsat   := RegNextWithEnable(io.fromRob.commit.vxsat)
         m.robCommit.vtype   := RegNextWithEnable(io.fromRob.commit.vtype)
-        m.robCommit.vl      := RegNext          (io.fromRob.commit.vl)
+        m.robCommit.vl      := DelayN           (io.fromRob.commit.vl, 2) // not used yet
         m.robCommit.vstart  := RegNextWithEnable(io.fromRob.commit.vstart)
         m.writeFCSR         := writeFpLegal
         m.writeVCSR         := writeVecLegal
@@ -826,7 +818,6 @@ class NewCSR(implicit val p: Parameters) extends Module
         in.hstatus := hstatus.regOut
         in.sstatus := mstatus.sstatus
         in.vsstatus := vsstatus.regOut
-        in.pcFromXtvec := trapHandleMod.io.out.pcFromXtvec
 
         in.menvcfg := menvcfg.regOut
         in.henvcfg := henvcfg.regOut
@@ -1023,9 +1014,6 @@ class NewCSR(implicit val p: Parameters) extends Module
     }
   })
 
-  private val needTargetUpdate = mnretEvent.out.targetPc.valid || mretEvent.out.targetPc.valid || sretEvent.out.targetPc.valid || dretEvent.out.targetPc.valid ||
-    trapEntryMEvent.out.targetPc.valid || trapEntryMNEvent.out.targetPc.valid || trapEntryHSEvent.out.targetPc.valid || trapEntryVSEvent.out.targetPc.valid || trapEntryDEvent.out.targetPc.valid
-
   private val noCSRIllegal = (ren || wen) && Cat(csrRwMap.keys.toSeq.sorted.map(csrAddr => !(addr === csrAddr.U))).andR
 
   private val noCSRIllegalReg = RegEnable(noCSRIllegal, ren || wen)
@@ -1115,22 +1103,6 @@ class NewCSR(implicit val p: Parameters) extends Module
       fromAIA.rdata.valid -> fromAIA.rdata.bits.data
     )), 0.U(64.W), io.in.fire || fromAIA.rdata.valid || claimAIA)
   io.out.bits.regOut := regOut
-  io.out.bits.targetPc := DataHoldBypass(
-    Mux(trapEntryDEvent.out.targetPc.valid,
-      trapEntryDEvent.out.targetPc.bits,
-      Mux1H(Seq(
-        mnretEvent.out.targetPc.valid -> mnretEvent.out.targetPc.bits,
-        mretEvent.out.targetPc.valid  -> mretEvent.out.targetPc.bits,
-        sretEvent.out.targetPc.valid  -> sretEvent.out.targetPc.bits,
-        dretEvent.out.targetPc.valid  -> dretEvent.out.targetPc.bits,
-        trapEntryMEvent.out.targetPc.valid -> trapEntryMEvent.out.targetPc.bits,
-        trapEntryMNEvent.out.targetPc.valid -> trapEntryMNEvent.out.targetPc.bits,
-        trapEntryHSEvent.out.targetPc.valid -> trapEntryHSEvent.out.targetPc.bits,
-        trapEntryVSEvent.out.targetPc.valid -> trapEntryVSEvent.out.targetPc.bits)
-      )
-    ),
-  needTargetUpdate)
-  io.out.bits.targetPcUpdate := needTargetUpdate
   io.out.bits.isPerfCnt := DataHoldBypass(addrInPerfCnt, false.B, io.in.fire)
 
   io.status.privState := privState
@@ -1148,6 +1120,37 @@ class NewCSR(implicit val p: Parameters) extends Module
   io.status.wfiEvent := debugIntr || (mie.rdata.asUInt & mip.rdata.asUInt).orR || nmip.asUInt.orR
   io.status.debugMode := debugMode
   io.status.singleStepFlag := !debugMode && dcsr.regOut.STEP
+
+  private val nonDebugTrapEventValid = Cat(Seq(trapEntryMEvent, trapEntryMNEvent, trapEntryHSEvent, trapEntryVSEvent).map(_.valid)).asUInt.orR
+  private val delayedPcFromXtvec = RegEnable(trapHandleMod.io.out.pcFromXtvec, nonDebugTrapEventValid)
+  private val nonDebugTrapTargetPc = Wire(new TargetPCBundle)
+  nonDebugTrapTargetPc.pc        := delayedPcFromXtvec
+  nonDebugTrapTargetPc.raiseIPF  := io.status.instrAddrTransType.checkPageFault(delayedPcFromXtvec)
+  nonDebugTrapTargetPc.raiseIAF  := io.status.instrAddrTransType.checkAccessFault(delayedPcFromXtvec)
+  nonDebugTrapTargetPc.raiseIGPF := io.status.instrAddrTransType.checkGuestPageFault(delayedPcFromXtvec)
+  
+  private val trapTargetUpdate = RegNext(nonDebugTrapEventValid || trapEntryDEvent.valid, false.B)
+  io.trapTargetPc.valid := trapTargetUpdate
+  io.trapTargetPc.bits := DataHoldBypass(
+    Mux(
+      trapEntryDEvent.out.targetPc.valid,
+      trapEntryDEvent.out.targetPc.bits,
+      nonDebugTrapTargetPc,
+    ),
+    trapTargetUpdate
+  )
+
+  private val xretTargetUpdate = mnretEvent.out.targetPc.valid || mretEvent.out.targetPc.valid || sretEvent.out.targetPc.valid || dretEvent.out.targetPc.valid
+  io.xretTargetPc.valid := xretTargetUpdate
+  io.xretTargetPc.bits := DataHoldBypass(
+    Mux1H(Seq(
+      mnretEvent.out.targetPc.valid -> mnretEvent.out.targetPc.bits,
+      mretEvent.out.targetPc.valid  -> mretEvent.out.targetPc.bits,
+      sretEvent.out.targetPc.valid  -> sretEvent.out.targetPc.bits,
+      dretEvent.out.targetPc.valid  -> dretEvent.out.targetPc.bits,
+    )),
+    xretTargetUpdate
+  )
 
   /**
    * debug_begin
@@ -1592,7 +1595,7 @@ class NewCSR(implicit val p: Parameters) extends Module
     diffVecCSRState.vxsat := vcsr.vxsat.asUInt
     diffVecCSRState.vxrm := vcsr.vxrm.asUInt
     diffVecCSRState.vcsr := vcsr.rdata.asUInt
-    diffVecCSRState.vl := RegNext(io.fromRob.commit.vl)
+    diffVecCSRState.vl := DelayN(io.fromRob.commit.vl, 2)
     diffVecCSRState.vtype := vtype.rdata.asUInt
     diffVecCSRState.vlenb := vlenb.rdata.asUInt
 
@@ -1620,19 +1623,31 @@ class NewCSR(implicit val p: Parameters) extends Module
     diffHCSRState.vsatp       := vsatp.rdata.asUInt
     diffHCSRState.vsscratch   := vsscratch.rdata.asUInt
 
-    val platformIRPMeipChange = !platformIRP.MEIP &&  RegNext(platformIRP.MEIP) || platformIRP.MEIP && !RegNext(platformIRP.MEIP)
-    val platformIRPMtipChange = !platformIRP.MTIP &&  RegNext(platformIRP.MTIP) || platformIRP.MTIP && !RegNext(platformIRP.MTIP)
-    val platformIRPMsipChange = !platformIRP.MSIP &&  RegNext(platformIRP.MSIP) || platformIRP.MSIP && !RegNext(platformIRP.MSIP)
-    val platformIRPSeipChange = !platformIRP.SEIP &&  RegNext(platformIRP.SEIP) || platformIRP.SEIP && !RegNext(platformIRP.SEIP)
-    val platformIRPStipChange = !sstcIRGen.o.STIP &&  RegNext(sstcIRGen.o.STIP) || sstcIRGen.o.STIP && !RegNext(sstcIRGen.o.STIP)
-    val platformIRPVseipChange = !platformIRP.VSEIP &&  RegNext(platformIRP.VSEIP) ||
-                                  platformIRP.VSEIP && !RegNext(platformIRP.VSEIP) ||
-                                 !hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt) &&  RegNext(hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt)) ||
-                                  hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt) && !RegNext(hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt))
-    val platformIRPVstipChange = !sstcIRGen.o.VSTIP && RegNext(sstcIRGen.o.VSTIP) || sstcIRGen.o.VSTIP && !RegNext(sstcIRGen.o.VSTIP)
-    val fromAIAMeipChange = !fromAIA.meip && RegNext(fromAIA.meip) || fromAIA.meip && !RegNext(fromAIA.meip)
-    val fromAIASeipChange = !fromAIA.seip && RegNext(fromAIA.seip) || fromAIA.seip && !RegNext(fromAIA.seip)
-    val lcofiReqChange = !lcofiReq && RegNext(lcofiReq) || lcofiReq && !RegNext(lcofiReq)
+    val meipReg = RegNext(platformIRP.MEIP, false.B)
+    val mtipReg = RegNext(platformIRP.MTIP, false.B)
+    val msipReg = RegNext(platformIRP.MSIP, false.B)
+    val seipReg = RegNext(platformIRP.SEIP, false.B)
+    val stipReg = RegNext(sstcIRGen.o.STIP, false.B)
+    val vseipReg = RegNext(platformIRP.VSEIP, false.B)
+    val hgeipVgeinReg = RegNext(hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt), false.B)
+    val vstipReg = RegNext(sstcIRGen.o.VSTIP, false.B)
+    val aiaMeipReg = RegNext(fromAIA.meip, false.B)
+    val aiaSeipReg = RegNext(fromAIA.seip, false.B)
+    val lcofiReqReg = RegNext(lcofiReq, false.B)
+
+    val platformIRPMeipChange = !platformIRP.MEIP && meipReg || platformIRP.MEIP && !meipReg
+    val platformIRPMtipChange = !platformIRP.MTIP && mtipReg || platformIRP.MTIP && !mtipReg
+    val platformIRPMsipChange = !platformIRP.MSIP && msipReg || platformIRP.MSIP && !msipReg
+    val platformIRPSeipChange = !platformIRP.SEIP && seipReg || platformIRP.SEIP && !seipReg
+    val platformIRPStipChange = !sstcIRGen.o.STIP && stipReg || sstcIRGen.o.STIP && !stipReg
+    val platformIRPVseipChange = !platformIRP.VSEIP &&  vseipReg ||
+                                  platformIRP.VSEIP && !vseipReg ||
+                                 !hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt) &&  hgeipVgeinReg ||
+                                  hgeip.rdata.asUInt(hstatus.regOut.VGEIN.asUInt) && !hgeipVgeinReg
+    val platformIRPVstipChange = !sstcIRGen.o.VSTIP && vstipReg || sstcIRGen.o.VSTIP && !vstipReg
+    val fromAIAMeipChange = !fromAIA.meip && aiaMeipReg || fromAIA.meip && !aiaMeipReg
+    val fromAIASeipChange = !fromAIA.seip && aiaSeipReg || fromAIA.seip && !aiaSeipReg
+    val lcofiReqChange = !lcofiReq && lcofiReqReg || lcofiReq && !lcofiReqReg
 
     val diffNonRegInterruptPendingEvent = DifftestModule(new DiffNonRegInterruptPendingEvent)
     diffNonRegInterruptPendingEvent.coreid           := hartId
@@ -1655,7 +1670,8 @@ class NewCSR(implicit val p: Parameters) extends Module
     val diffMhpmeventOverflowEvent = DifftestModule(new DiffMhpmeventOverflowEvent)
     diffMhpmeventOverflowEvent.coreid := hartId
     diffMhpmeventOverflowEvent.valid  := Cat(mhpmevents.zipWithIndex.map{ case (event, i) =>
-      !ofFromPerfCntVec(i) && RegNext(ofFromPerfCntVec(i)) || ofFromPerfCntVec(i) && !RegNext(ofFromPerfCntVec(i))
+      val ofFromPerfCntVecReg = RegNext(ofFromPerfCntVec(i), false.B)
+      !ofFromPerfCntVec(i) && ofFromPerfCntVecReg || ofFromPerfCntVec(i) && !ofFromPerfCntVecReg
     }).orR
     diffMhpmeventOverflowEvent.mhpmeventOverflow := VecInit(mhpmevents.map(_.regOut.asInstanceOf[MhpmeventBundle].OF.asBool)).asUInt
 

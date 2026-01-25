@@ -19,6 +19,7 @@
 [submodule "yunsuan"]
 	path = yunsuan
 	url = git@github.com:GaryCAICHI/YunSuan.git
+	branch = kunminghu-v3-zvbaseband
 [submodule "coupledL2"]
 	path = coupledL2
 	url = https://github.com/OpenXiangShan/CoupledL2.git
@@ -28,3 +29,6 @@
 [submodule "ChiselAIA"]
 	path = ChiselAIA
 	url = https://github.com/OpenXiangShan/ChiselAIA.git
+[submodule "ChiselIOPMP"]
+	path = ChiselIOPMP
+	url = https://github.com/OpenXiangShan/ChiselIOPMP.git

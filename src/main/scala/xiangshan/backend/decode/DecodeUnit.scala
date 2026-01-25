@@ -19,7 +19,6 @@ package xiangshan.backend.decode
 import org.chipsalliance.cde.config.Parameters
 import chisel3._
 import chisel3.util._
-import freechips.rocketchip.rocket.CSRs
 import freechips.rocketchip.rocket.Instructions._
 import freechips.rocketchip.rocket.CustomInstructions._
 import freechips.rocketchip.util.uintToBitPat
@@ -33,8 +32,9 @@ import xiangshan.backend.decode.isa.CSRReadOnlyBlockInstructions._
 import xiangshan.backend.decode.isa.bitfield.{InstVType, OPCODE5Bit, XSInstBitFields}
 import xiangshan.backend.fu.vector.Bundles.{VType, Vl}
 import xiangshan.backend.fu.wrapper.CSRToDecode
+import xiangshan.backend.decode.isa.CSRs
 import xiangshan.backend.decode.Zimop._
-import yunsuan.{FcmpOpCode, VfaluType, VfcvtType, VfmaType, VfmaOpCode}
+import yunsuan.{FcmpOpCode, MULOpType, VfaluType, VfcvtType, VfmaType, VfmaOpCode}
 import xiangshan.backend.decode.Zvbaseband._
 
 /**
@@ -181,20 +181,20 @@ object XDecode extends DecodeConstants {
     SRLW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.alu, ALUOpType.srlw, SelImm.X    , xWen = T, canRobCompress = T),
 
     // RV64M
-    MUL     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mul   , SelImm.X, xWen = T, canRobCompress = T),
-    MULH    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mulh  , SelImm.X, xWen = T, canRobCompress = T),
-    MULHU   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mulhu , SelImm.X, xWen = T, canRobCompress = T),
-    MULHSU  -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mulhsu, SelImm.X, xWen = T, canRobCompress = T),
-    MULW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MDUOpType.mulw  , SelImm.X, xWen = T, canRobCompress = T),
+    MUL     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MULOpType.mul   , SelImm.X, xWen = T, canRobCompress = T),
+    MULH    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MULOpType.mulh  , SelImm.X, xWen = T, canRobCompress = T),
+    MULHU   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MULOpType.mulhu , SelImm.X, xWen = T, canRobCompress = T),
+    MULHSU  -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MULOpType.mulhsu, SelImm.X, xWen = T, canRobCompress = T),
+    MULW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.mul, MULOpType.mulw  , SelImm.X, xWen = T, canRobCompress = T),
 
-    DIV     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.div   , SelImm.X, xWen = T, canRobCompress = T),
-    DIVU    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.divu  , SelImm.X, xWen = T, canRobCompress = T),
-    REM     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.rem   , SelImm.X, xWen = T, canRobCompress = T),
-    REMU    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.remu  , SelImm.X, xWen = T, canRobCompress = T),
-    DIVW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.divw  , SelImm.X, xWen = T, canRobCompress = T),
-    DIVUW   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.divuw , SelImm.X, xWen = T, canRobCompress = T),
-    REMW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.remw  , SelImm.X, xWen = T, canRobCompress = T),
-    REMUW   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, MDUOpType.remuw , SelImm.X, xWen = T, canRobCompress = T),
+    DIV     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.div   , SelImm.X, xWen = T, canRobCompress = T),
+    DIVU    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.divu  , SelImm.X, xWen = T, canRobCompress = T),
+    REM     -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.rem   , SelImm.X, xWen = T, canRobCompress = T),
+    REMU    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.remu  , SelImm.X, xWen = T, canRobCompress = T),
+    DIVW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.divw  , SelImm.X, xWen = T, canRobCompress = T),
+    DIVUW   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.divuw , SelImm.X, xWen = T, canRobCompress = T),
+    REMW    -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.remw  , SelImm.X, xWen = T, canRobCompress = T),
+    REMUW   -> XSDecode(SrcType.reg, SrcType.reg, SrcType.X, FuType.div, DIVOpType.remuw , SelImm.X, xWen = T, canRobCompress = T),
 
     AUIPC   -> XSDecode(SrcType.pc , SrcType.imm, SrcType.X, FuType.jmp, JumpOpType.auipc, SelImm.IMM_U , xWen = T),
     JAL     -> XSDecode(SrcType.pc , SrcType.imm, SrcType.X, FuType.jmp, JumpOpType.jal  , SelImm.IMM_UJ, xWen = T),
@@ -423,9 +423,9 @@ object FpDecode extends DecodeConstants{
     FSW     -> FDecode(SrcType.reg, SrcType.fp,  SrcType.X, FuType.stu, LSUOpType.sw, selImm = SelImm.IMM_S          ),
     FSD     -> FDecode(SrcType.reg, SrcType.fp,  SrcType.X, FuType.stu, LSUOpType.sd, selImm = SelImm.IMM_S          ),
 
-    FMV_D_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2v, IF2VectorType.FMX_D_X, fWen = T, canRobCompress = T),
-    FMV_W_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2v, IF2VectorType.FMX_W_X, fWen = T, canRobCompress = T),
-    FMV_H_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2v, IF2VectorType.FMX_H_X, fWen = T, canRobCompress = T),
+    FMV_D_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2f, FuOpType.X, fWen = T, canRobCompress = T),
+    FMV_W_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2f, FuOpType.X, fWen = T, canRobCompress = T),
+    FMV_H_X -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2f, FuOpType.X, fWen = T, canRobCompress = T),
 
     // Int to FP
     FCVT_S_W  -> FDecode(SrcType.reg, SrcType.imm, SrcType.X, FuType.i2f, FuOpType.X, fWen = T, canRobCompress = T),
@@ -590,34 +590,35 @@ object XSDebugDecode extends DecodeConstants {
   )
 }
 
-abstract class Imm(val len: Int) {
+abstract class Imm(val len: Int, val typEncode: UInt) {
   def toImm32(minBits: UInt): UInt = do_toImm32(minBits(len - 1, 0))
+  def extract(width: Int)(minBits: UInt): UInt = ???
   def do_toImm32(minBits: UInt): UInt
   def minBitsFromInstr(instr: UInt): UInt
 }
 
-case class Imm_I() extends Imm(12) {
+case class Imm_I() extends Imm(12, SelImm.IMM_I) {
   override def do_toImm32(minBits: UInt): UInt = SignExt(minBits(len - 1, 0), 32)
 
   override def minBitsFromInstr(instr: UInt): UInt =
     Cat(instr(31, 20))
 }
 
-case class Imm_S() extends Imm(12) {
+case class Imm_S() extends Imm(12, SelImm.IMM_S) {
   override def do_toImm32(minBits: UInt): UInt = SignExt(minBits, 32)
 
   override def minBitsFromInstr(instr: UInt): UInt =
     Cat(instr(31, 25), instr(11, 7))
 }
 
-case class Imm_B() extends Imm(12) {
+case class Imm_B() extends Imm(12, SelImm.IMM_SB) {
   override def do_toImm32(minBits: UInt): UInt = SignExt(Cat(minBits, 0.U(1.W)), 32)
 
   override def minBitsFromInstr(instr: UInt): UInt =
     Cat(instr(31), instr(7), instr(30, 25), instr(11, 8))
 }
 
-case class Imm_U() extends Imm(20){
+case class Imm_U() extends Imm(20, SelImm.IMM_U){
   override def do_toImm32(minBits: UInt): UInt = Cat(minBits(len - 1, 0), 0.U(12.W))
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -625,7 +626,7 @@ case class Imm_U() extends Imm(20){
   }
 }
 
-case class Imm_J() extends Imm(20){
+case class Imm_J() extends Imm(20, SelImm.IMM_UJ){
   override def do_toImm32(minBits: UInt): UInt = SignExt(Cat(minBits, 0.U(1.W)), 32)
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -633,7 +634,7 @@ case class Imm_J() extends Imm(20){
   }
 }
 
-case class Imm_Z() extends Imm(12 + 5 + 5){
+case class Imm_Z() extends Imm(12 + 5 + 5, SelImm.IMM_Z){
   override def do_toImm32(minBits: UInt): UInt = minBits
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -661,31 +662,27 @@ case class Imm_Z() extends Imm(12 + 5 + 5){
   }
 }
 
-case class Imm_B6() extends Imm(6){
-  override def do_toImm32(minBits: UInt): UInt = ZeroExt(minBits, 32)
-
-  override def minBitsFromInstr(instr: UInt): UInt = {
-    instr(25, 20)
-  }
-}
-
-case class Imm_OPIVIS() extends Imm(5){
+case class Imm_OPIVIS() extends Imm(5, SelImm.IMM_OPIVIS){
   override def do_toImm32(minBits: UInt): UInt = SignExt(minBits, 32)
 
+  override def extract(width: Int)(imm: UInt): UInt = SignExt(imm.take(5), width)
+
   override def minBitsFromInstr(instr: UInt): UInt = {
     instr(19, 15)
   }
 }
 
-case class Imm_OPIVIU() extends Imm(5){
+case class Imm_OPIVIU() extends Imm(5, SelImm.IMM_OPIVIU){
   override def do_toImm32(minBits: UInt): UInt = ZeroExt(minBits, 32)
 
+  override def extract(width: Int)(imm: UInt): UInt = ZeroExt(imm.take(5), width)
+
   override def minBitsFromInstr(instr: UInt): UInt = {
     instr(19, 15)
   }
 }
 
-case class Imm_VSETVLI() extends Imm(11){
+case class Imm_VSETVLI() extends Imm(11, SelImm.IMM_VSETVLI){
   override def do_toImm32(minBits: UInt): UInt = SignExt(minBits, 32)
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -701,9 +698,13 @@ case class Imm_VSETVLI() extends Imm(11){
     vtype := extedImm(10, 0).asTypeOf(new InstVType)
     vtype
   }
+
+  def getVTypei(imm: UInt): UInt = {
+    imm(10, 0)
+  }
 }
 
-case class Imm_VSETIVLI() extends Imm(15){
+case class Imm_VSETIVLI() extends Imm(15, SelImm.IMM_VSETIVLI){
   override def do_toImm32(minBits: UInt): UInt = SignExt(minBits, 32)
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -723,12 +724,16 @@ case class Imm_VSETIVLI() extends Imm(15){
     vtype
   }
 
+  def getVTypei(imm: UInt): UInt = {
+    imm(9, 0)
+  }
+
   def getAvl(extedImm: UInt): UInt = {
     extedImm(14, 10)
   }
 }
 
-case class Imm_LUI32() extends Imm(32){
+case class Imm_LUI32() extends Imm(32, SelImm.IMM_LUI32){
   override def do_toImm32(minBits: UInt): UInt = minBits(31, 0)
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -736,7 +741,7 @@ case class Imm_LUI32() extends Imm(32){
   }
 }
 
-case class Imm_VRORVI() extends Imm(6){
+case class Imm_VRORVI() extends Imm(6, SelImm.IMM_VRORVI){
   override def do_toImm32(minBits: UInt): UInt = ZeroExt(minBits, 32)
 
   override def minBitsFromInstr(instr: UInt): UInt = {
@@ -751,7 +756,6 @@ object ImmUnion {
   val U = Imm_U()
   val J = Imm_J()
   val Z = Imm_Z()
-  val B6 = Imm_B6()
   val OPIVIS = Imm_OPIVIS()
   val OPIVIU = Imm_OPIVIU()
   val VSETVLI = Imm_VSETVLI()
@@ -760,7 +764,7 @@ object ImmUnion {
   val VRORVI = Imm_VRORVI()
 
   // do not add special type lui32 to this, keep ImmUnion max len being 20.
-  val imms = Seq(I, S, B, U, J, Z, B6, OPIVIS, OPIVIU, VSETVLI, VSETIVLI, VRORVI)
+  val imms = Seq(I, S, B, U, J, Z, OPIVIS, OPIVIU, VSETVLI, VSETIVLI, VRORVI)
   val maxLen = imms.maxBy(_.len).len
   val immSelMap = Seq(
     SelImm.IMM_I,
@@ -769,7 +773,6 @@ object ImmUnion {
     SelImm.IMM_U,
     SelImm.IMM_UJ,
     SelImm.IMM_Z,
-    SelImm.IMM_B6,
     SelImm.IMM_OPIVIS,
     SelImm.IMM_OPIVIU,
     SelImm.IMM_VSETVLI,
@@ -868,7 +871,6 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
   // src(2) of fma is fs3, src(2) of vector inst is old vd
   decodedInst.lsrc(2) := Mux(isFMA, inst.FS3, inst.VD)
   decodedInst.lsrc(3) := V0_IDX.U
-  decodedInst.lsrc(4) := Vl_IDX.U
 
   // read dest location
   decodedInst.ldest := inst.RD
@@ -1098,7 +1100,7 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
   decodedInst.vlsInstr := isVls
 
   decodedInst.srcType(3) := Mux(inst.VM === 0.U, SrcType.vp, SrcType.DC) // mask src
-  decodedInst.srcType(4) := SrcType.vp // vconfig
+  decodedInst.vlRen := true.B
 
   val uopInfoGen = Module(new UopInfoGen)
   uopInfoGen.io.in.preInfo.isVecArith := inst.isVecArith
@@ -1132,8 +1134,7 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
     decodedInst.srcType(1) := SrcType.no
     decodedInst.srcType(2) := SrcType.no
     decodedInst.srcType(3) := SrcType.no
-    decodedInst.srcType(4) := SrcType.vp
-    decodedInst.lsrc(4)    := Vl_IDX.U
+    decodedInst.vlRen := true.B
     decodedInst.waitForward   := false.B
     decodedInst.blockBackward := false.B
   }.elsewhen (isCsrrVlenb) {
@@ -1142,7 +1143,7 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
     decodedInst.srcType(1) := SrcType.imm
     decodedInst.srcType(2) := SrcType.no
     decodedInst.srcType(3) := SrcType.no
-    decodedInst.srcType(4) := SrcType.no
+    decodedInst.vlRen := false.B
     decodedInst.selImm := SelImm.IMM_I
     decodedInst.waitForward := false.B
     decodedInst.blockBackward := false.B

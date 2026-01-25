@@ -24,7 +24,7 @@ trait VecFuncUnitAlias { this: FuncUnit =>
   protected val vstart  = vecCtrl.vstart
 
   protected val frm     = io.frm.getOrElse(0.U(3.W))
-  protected val vxrm    = io.vxrm.getOrElse(0.U(3.W))
+  protected val vxrm    = io.vxrm.getOrElse(0.U(2.W))
   protected val instRm  = inCtrl.fpu.getOrElse(0.U.asTypeOf(new FPUCtrlSignals)).rm
   protected val rm      = Mux(vecCtrl.fpu.isFpToVecInst && instRm =/= "b111".U, instRm, frm)
   protected val vuopIdx = vecCtrl.vuopIdx
@@ -33,9 +33,16 @@ trait VecFuncUnitAlias { this: FuncUnit =>
   protected val fuOpType  = inCtrl.fuOpType
   protected val isNarrow  = vecCtrl.isNarrow
   protected val isExt     = vecCtrl.isExt
+  protected val isDstMask = vecCtrl.isDstMask
   protected val isMove    = vecCtrl.isMove
   // swap vs1 and vs2, used by vrsub, etc
   protected val isReverse = vecCtrl.isReverse
+
+  protected val sew8  = vecCtrl.sew8
+  protected val sew16 = vecCtrl.sew16
+  protected val sew32 = vecCtrl.sew32
+  protected val sew64 = vecCtrl.sew64
+  protected val maskVecGen = vecCtrl.maskVecGen
 
   protected val allMaskTrue = VecInit(Seq.fill(VLEN)(true.B)).asUInt
   protected val allMaskFalse = VecInit(Seq.fill(VLEN)(false.B)).asUInt
@@ -51,8 +58,7 @@ trait VecFuncUnitAlias { this: FuncUnit =>
       vm -> allMaskTrue
     ))
   }
-  protected val srcVConfig: VConfig = if(!cfg.vconfigWakeUp) inCtrl.vpu.get.vconfig else inData.getSrcVConfig.asTypeOf(new VConfig)
-  protected val vl = srcVConfig.vl
+  protected val vl = inData.vl.get
 }
 
 class VecPipedFuncUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
@@ -73,8 +79,7 @@ class VecPipedFuncUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(c
 
   // vadc.vv, vsbc.vv need this
   protected val outNeedClearMask: Bool = if(cfg == VialuCfg) VialuFixType.needClearMask(outCtrl.fuOpType) else false.B
-  protected val outVConfig  = if(!cfg.vconfigWakeUp) outCtrl.vpu.get.vconfig else outData.getSrcVConfig.asTypeOf(new VConfig)
-  protected val outVl       = outVConfig.vl
+  protected val outVl       = outData.vl.get
   protected val outVstart   = outVecCtrl.vstart
   protected val outOldVd    = outData.src(2)
   protected val outVlmul    = outCtrl.vpu.get.vlmul

@@ -23,7 +23,6 @@ import org.chipsalliance.cde.config.Parameters
 import utility.InstSeqNum
 import utils.EnumUInt
 import xiangshan.Redirect
-import xiangshan.RedirectLevel
 import xiangshan.TopDownCounters
 import xiangshan.TriggerAction
 import xiangshan.backend.GPAMemEntry
@@ -34,7 +33,6 @@ import xiangshan.frontend.bpu.BpuMeta
 import xiangshan.frontend.bpu.BpuPerfMeta
 import xiangshan.frontend.bpu.BpuPrediction
 import xiangshan.frontend.bpu.BpuRedirect
-import xiangshan.frontend.bpu.BpuSpeculationMeta
 import xiangshan.frontend.bpu.BpuTrain
 import xiangshan.frontend.bpu.BranchAttribute
 import xiangshan.frontend.bpu.BranchInfo
@@ -52,10 +50,9 @@ class FrontendTopDownBundle(implicit p: Parameters) extends FrontendBundle {
 }
 
 class BpuToFtqIO(implicit p: Parameters) extends FrontendBundle {
-  val prediction:      DecoupledIO[BpuPrediction]      = Decoupled(new BpuPrediction)
-  val speculationMeta: DecoupledIO[BpuSpeculationMeta] = Decoupled(new BpuSpeculationMeta)
-  val meta:            DecoupledIO[BpuMeta]            = Decoupled(new BpuMeta)
-  val s3FtqPtr:        FtqPtr                          = Output(new FtqPtr)
+  val prediction: DecoupledIO[BpuPrediction] = Decoupled(new BpuPrediction)
+  val meta:       DecoupledIO[BpuMeta]       = Decoupled(new BpuMeta)
+  val s3FtqPtr:   FtqPtr                     = Output(new FtqPtr)
 
   // perfMeta uses the same valid signal as meta
   val perfMeta:       BpuPerfMeta           = Output(new BpuPerfMeta)
@@ -294,6 +291,10 @@ object ExceptionType {
     apply(false.B, false.B, denied, false.B, corrupt && !denied, canAssert)
   }
 
+  // raise hwe according to ecc/parity check
+  def fromEcc(corrupt: Bool, canAssert: Bool = true.B): ExceptionType =
+    apply(false.B, false.B, false.B, false.B, corrupt, canAssert)
+
   // raise ill according to rvc expander
   def fromRvcExpander(ill: Bool, canAssert: Bool = true.B): ExceptionType =
     apply(false.B, false.B, false.B, ill, false.B, canAssert)
@@ -357,15 +358,16 @@ class IfuToBackendIO(implicit p: Parameters) extends FrontendBundle {
 }
 
 object BlameBpuSource {
-  object BlameType extends EnumUInt(4) {
+  object BlameType extends EnumUInt(5) {
     def BTB:    UInt = 0.U(width.W)
     def TAGE:   UInt = 1.U(width.W)
     def RAS:    UInt = 2.U(width.W)
     def ITTAGE: UInt = 3.U(width.W)
+    def SC:     UInt = 4.U(width.W)
   }
 
   def apply(perf: BpuPerfMeta, branch: BranchInfo): UInt = {
-    import BlameType.{BTB, TAGE, RAS, ITTAGE}
+    import BlameType.{BTB, TAGE, RAS, ITTAGE, SC}
     val src  = perf.bpSource
     val pred = perf.bpPred
     val attr = branch.attribute
@@ -379,7 +381,7 @@ object BlameBpuSource {
         // If cond before, TAGE mispredicts
         // If cond after, should trigger assertion, TODO
         blame := TAGE
-      }.elsewhen(attr.isReturn) {
+      }.elsewhen(attr.isReturn && pred.cfiPosition === branch.cfiPosition) {
         blame := RAS
       }.otherwise {
         // Other branch type mismatch
@@ -391,6 +393,12 @@ object BlameBpuSource {
       }.elsewhen(attr.isConditional) {
         blame := TAGE
         // If cond after, should trigger assertion, TODO
+      }.otherwise {
+        blame := BTB
+      }
+    }.elsewhen(src.s3MbtbSc) {
+      when(attr.isConditional) {
+        blame := Mux(onlyDirectionWrong, SC, BTB)
       }.otherwise {
         blame := BTB
       }

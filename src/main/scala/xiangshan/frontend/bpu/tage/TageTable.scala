@@ -66,7 +66,7 @@ class TageTable(
     VecInit.fill(NumBanks)(
       VecInit.fill(NumWays)(
         VecInit.fill(NumSets)(
-          0.U.asTypeOf(new SaturateCounter(UsefulCtrWidth))
+          UsefulCounter.Zero
         )
       )
     )
@@ -80,7 +80,7 @@ class TageTable(
         new EntrySramWriteReq,
         WriteBufferSize,
         numPorts = NumWays,
-        hasCnt = false, // FIXME: set to true when bug fixed
+        hasCnt = true,
         nameSuffix = s"tageTable${tableIdx}_${bankIdx}"
       )).suggestName(s"tage_entry_write_buffer_bank${bankIdx}")
     }
@@ -93,16 +93,22 @@ class TageTable(
       way.io.r.req.valid       := predictReadValid || trainReadValid
       way.io.r.req.bits.setIdx := Mux(predictReadValid, io.predictReadReq.bits.setIdx, io.trainReadReq.bits.setIdx)
     }
+    assert(!(predictReadValid && trainReadValid), s"read conflict in tage_table_${tableIdx}_bank_${bankIdx}")
   }
+
+  // delay one cycle for better timing
+  private val writeReqValid = RegNext(io.writeReq.valid, init = false.B)
+  private val writeReq      = RegEnable(io.writeReq.bits, io.writeReq.valid)
 
   // write to write buffer
   entryWriteBuffers.zipWithIndex.foreach { case (buffer, bankIdx) =>
     buffer.io.write.zipWithIndex.foreach { case (writePort, wayIdx) =>
-      writePort.valid := io.writeReq.valid && io.writeReq.bits.bankMask(bankIdx) && io.writeReq.bits.wayMask(wayIdx)
-      writePort.bits.setIdx    := io.writeReq.bits.setIdx
-      writePort.bits.entry     := io.writeReq.bits.entries(wayIdx)
-      writePort.bits.usefulCtr := io.writeReq.bits.usefulCtrs(wayIdx)
+      writePort.valid          := writeReqValid && writeReq.bankMask(bankIdx) && writeReq.wayMask(wayIdx)
+      writePort.bits.setIdx    := writeReq.setIdx
+      writePort.bits.entry     := writeReq.entries(wayIdx)
+      writePort.bits.usefulCtr := writeReq.usefulCtrs(wayIdx)
     }
+    buffer.io.takenMask.get := writeReq.actualTakenMask
   }
 
   // write to sram from write buffer
@@ -117,7 +123,7 @@ class TageTable(
       when(io.resetUseful) {
         ctrsPerWay.foreach(_.resetZero())
       }.elsewhen(readPort.fire) {
-        ctrsPerWay(setIdx).value := readPort.bits.usefulCtr.value
+        ctrsPerWay(setIdx) := readPort.bits.usefulCtr
       }
     }
   }
@@ -153,4 +159,8 @@ class TageTable(
   XSPerfAccumulate("predict_read", io.predictReadReq.valid)
   XSPerfAccumulate("train_read", io.trainReadReq.valid)
   XSPerfAccumulate("write", io.writeReq.valid)
+  XSPerfAccumulate(
+    "drop_write",
+    PopCount(entryWriteBuffers.flatMap(writePorts => writePorts.io.write.map(p => p.valid && !p.ready)))
+  )
 }

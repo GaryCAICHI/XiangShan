@@ -197,8 +197,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
       t.valid && !t.bits.isInterrupt && (t.bits.trapVec(EX_II) || t.bits.trapVec(EX_VI))
   })
 
-  trapTvalMod.io.targetPc.valid := csrMod.io.out.bits.targetPcUpdate
-  trapTvalMod.io.targetPc.bits := csrMod.io.out.bits.targetPc
+  trapTvalMod.io.targetPc := csrMod.io.trapTargetPc
   trapTvalMod.io.clear := csrIn.exception.valid && csrIn.exception.bits.isFetchMalAddr
   trapTvalMod.io.fromCtrlBlock.flush := io.flush
   trapTvalMod.io.fromCtrlBlock.robDeqPtr := io.csrio.get.robDeqPtr
@@ -302,12 +301,13 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   redirect.ftqIdx := RegEnable(io.in.bits.ctrl.ftqIdx.get, io.in.fire)
   redirect.ftqOffset := RegEnable(io.in.bits.ctrl.ftqOffset.get, io.in.fire)
   redirect.taken := true.B
-  redirect.target := csrMod.io.out.bits.targetPc.pc
-  redirect.backendIPF := csrMod.io.out.bits.targetPc.raiseIPF
-  redirect.backendIAF := csrMod.io.out.bits.targetPc.raiseIAF
-  redirect.backendIGPF := csrMod.io.out.bits.targetPc.raiseIGPF
+  redirect.fullTarget := csrMod.io.xretTargetPc.bits.pc
+  redirect.target := csrMod.io.xretTargetPc.bits.pc
+  redirect.backendIPF := csrMod.io.xretTargetPc.bits.raiseIPF
+  redirect.backendIAF := csrMod.io.xretTargetPc.bits.raiseIAF
+  redirect.backendIGPF := csrMod.io.xretTargetPc.bits.raiseIGPF
   // Only mispred will send redirect to frontend
-  redirect.isMisPred := true.B
+  redirect.isMisPred := false.B
 
   val rfWenReg = RegEnable(io.in.bits.ctrl.rfWen.get, io.in.fire)
   val pdestReg = RegEnable(io.in.bits.ctrl.pdest, io.in.fire)
@@ -318,10 +318,10 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   io.out.bits.ctrl.rfWen.foreach(_ := Mux(isXRetReg, rfWenReg, DelayNWithValid(rfWenReg, csrModOutValid, 3)._2))
   val isRVCReg = RegEnable(io.in.bits.ctrl.isRVC.get, io.in.fire)
   io.out.bits.ctrl.isRVC.foreach(_ := Mux(isXRetReg, isRVCReg, DelayNWithValid(isRVCReg, csrModOutValid, 3)._2))
-  val perfDebugInfoReg = RegEnable(io.in.bits.perfDebugInfo, io.in.fire)
-  io.out.bits.perfDebugInfo := Mux(isXRetReg, perfDebugInfoReg, DelayNWithValid(perfDebugInfoReg, csrModOutValid, 3)._2)
-  val debug_seqNumReg = RegEnable(io.in.bits.debug_seqNum, io.in.fire)
-  io.out.bits.debug_seqNum := Mux(isXRetReg, debug_seqNumReg, DelayNWithValid(debug_seqNumReg, csrModOutValid, 3)._2)
+  val perfDebugInfoReg = io.in.bits.perfDebugInfo.map(x => RegEnable(io.in.bits.perfDebugInfo.get, io.in.fire))
+  io.out.bits.perfDebugInfo.foreach(_ := Mux(isXRetReg, perfDebugInfoReg.get, DelayNWithValid(perfDebugInfoReg.get, csrModOutValid, 3)._2))
+  val debug_seqNumReg = io.in.bits.debug_seqNum.map(x => RegEnable(io.in.bits.debug_seqNum.get, io.in.fire))
+  io.out.bits.debug_seqNum.foreach(_ := Mux(isXRetReg, debug_seqNumReg.get, DelayNWithValid(debug_seqNumReg.get, csrModOutValid, 3)._2))
 
   override val criticalErrors = csrMod.getCriticalErrors
   generateCriticalErrors()
@@ -332,9 +332,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   csrOut.vpu.vstart := csrMod.io.status.vecState.vstart.asUInt
   csrOut.vpu.vxrm   := csrMod.io.status.vecState.vxrm.asUInt
 
-  csrOut.isXRet := isXRet
-
-  csrOut.trapTarget := csrMod.io.out.bits.targetPc
+  csrOut.trapTarget := csrMod.io.trapTargetPc.bits
   csrOut.interrupt := csrMod.io.status.interrupt
   csrOut.wfi_event := csrMod.io.status.wfiEvent
 
@@ -387,7 +385,7 @@ class CSR(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg)
   csrOut.instrAddrTransType := csrMod.io.status.instrAddrTransType
   csrOut.criticalErrorState := csrMod.io.status.criticalErrorState
 
-  csrToDecode := csrMod.io.toDecode
+  csrToDecode := RegNext(csrMod.io.toDecode)
 }
 
 class CSRInput(implicit p: Parameters) extends XSBundle with HasSoCParameter {

@@ -6,13 +6,14 @@ import chisel3.util._
 import utils.SeqUtils
 import xiangshan.backend.BackendParams
 import xiangshan.backend.Bundles._
-import xiangshan.backend.datapath.DataConfig.DataConfig
+import xiangshan.backend.datapath.DataConfig.{DataConfig, FpData, IntData, V0Data, VecData, VlData}
 import xiangshan.backend.datapath.WbConfig._
 import xiangshan.backend.datapath.{WakeUpConfig, WakeUpSource}
 import xiangshan.backend.exu.ExeUnitParams
 import xiangshan.backend.fu.{FuConfig, FuType}
 import xiangshan.SelImm
-import xiangshan.backend.issue.EntryBundles.EntryDeqRespBundle
+import xiangshan.backend.decode.Imm
+import xiangshan.backend.issue.EntryBundles.IssueQueueRespBundle
 import xiangshan.backend.fu.FuConfig._
 
 case class IssueBlockParams(
@@ -66,9 +67,10 @@ case class IssueBlockParams(
 
   def isVecMemIQ: Boolean = isVecLduIQ || isVecStuIQ
 
-  def needFeedBackSqIdx: Boolean = isVecMemIQ || isStAddrIQ
+  def needFeedBackSqIdx: Boolean = isVecStuIQ
 
-  def needFeedBackLqIdx: Boolean = isVecMemIQ || isLdAddrIQ
+  // There is no snresp for load, so there is no need to provide feedback on lqidx
+  def needFeedBackLqIdx: Boolean = false
 
   def needLoadDependency: Boolean = exuBlockParams.map(_.needLoadDependency).reduce(_ || _)
 
@@ -142,7 +144,7 @@ case class IssueBlockParams(
 
   def needSrcVxrm: Boolean = exuBlockParams.map(_.needSrcVxrm).reduce(_ || _)
 
-  def writeVConfig: Boolean = exuBlockParams.map(_.writeVConfig).reduce(_ || _)
+  def writeVConfig: Boolean = exuBlockParams.map(_.writeVlRf).reduce(_ || _)
   
   def writeVType: Boolean = exuBlockParams.map(_.writeVType).reduce(_ || _)
 
@@ -237,6 +239,20 @@ case class IssueBlockParams(
   def needVlWen: Boolean = exuBlockParams.map(_.needVlWen).reduce(_ || _)
 
   def needOg2Resp: Boolean = exuBlockParams.map(_.needOg2).reduce(_ || _)
+
+  def needS0Resp = this.isLdAddrIQ || this.isStAddrIQ || this.isStdIQ  || this.isVecStuIQ
+
+  def needFakeS1Resp = this.isStAddrIQ
+
+  def needS2Resp = this.isStAddrIQ
+
+  def needSnResp = this.isVecStuIQ
+
+  // TODO needOg0Resp needOg1Resp
+  def issueTimerMaxValue: Int = 1 + Seq(needOg2Resp, needS0Resp, needFakeS1Resp, needS2Resp, needSnResp).count(_ == true)
+
+  def issueTimerWidth = issueTimerMaxValue.U.getWidth
+
 
   def needUncertainWakeupFromExu: Boolean = exuBlockParams.map(_.fuConfigs).flatten.map(x => FuConfig.needUncertainWakeupFuConfigs.contains(x)).reduce(_ || _)
 
@@ -341,10 +357,10 @@ case class IssueBlockParams(
 
   def deqFuDiff: Boolean = (numDeq == 2) && deqFuInterSect.length == 0
 
-  def deqImmTypes: Seq[UInt] = getFuCfgs.flatMap(_.immType).distinct
+  def deqImmTypes: Seq[Imm] = getFuCfgs.flatMap(_.immType).distinct
 
   // set load imm to 32-bit for fused_lui_load
-  def deqImmTypesMaxLen: Int = if (isLdAddrIQ || isHyAddrIQ) 32 else deqImmTypes.map(SelImm.getImmUnion(_)).maxBy(_.len).len
+  def deqImmTypesMaxLen: Int = if (isLdAddrIQ || isHyAddrIQ) 32 else deqImmTypes.map(x => x).maxBy(_.len).len
 
   def needImm: Boolean = deqImmTypes.nonEmpty
 
@@ -398,32 +414,41 @@ case class IssueBlockParams(
     MixedVec(exuBlockParams.filterNot(_.fakeUnit).map(x => ValidIO(new IssueQueueIssueBundle(this, x))))
   }
 
+  def genExuWakeUpOutValidBundle(implicit p: Parameters): MixedVec[DecoupledIO[IssueQueueIQWakeUpBundle]] = {
+    val uncertainExuParams = this.allExuParams.filter(_.needUncertainWakeup)
+    MixedVec(uncertainExuParams.map(param => {
+      val isCopyPdest = param.copyWakeupOut
+      val copyNum = param.copyNum
+      DecoupledIO(new IssueQueueIQWakeUpBundle(backendParam.getExuIdx(param.name), backendParam, isCopyPdest, copyNum))
+    }))
+  }
+
   def genWBWakeUpSinkValidBundle(implicit p: Parameters): MixedVec[ValidIO[IssueQueueWBWakeUpBundle]] = {
     val intBundle: Seq[ValidIO[IssueQueueWBWakeUpBundle]] = schdType match {
-      case IntScheduler() => needWakeupFromIntWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam))).toSeq
+      case IntScheduler() => needWakeupFromIntWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam, IntData()))).toSeq
       case _ => Seq()
     }
     val fpBundle = schdType match {
-      case FpScheduler() => needWakeupFromFpWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam))).toSeq
+      case FpScheduler() => needWakeupFromFpWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam, FpData()))).toSeq
       case _ => Seq()
     }
     val vfBundle = schdType match {
-      case VecScheduler() => needWakeupFromVfWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam))).toSeq
+      case VecScheduler() => needWakeupFromVfWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam, VecData()))).toSeq
       case _ => Seq()
     }
     val v0Bundle = schdType match {
-      case VecScheduler() => needWakeupFromV0WBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam))).toSeq
+      case VecScheduler() => needWakeupFromV0WBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam, V0Data()))).toSeq
       case _ => Seq()
     }
     val vlBundle = schdType match {
-      case VecScheduler() => needWakeupFromVlWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam))).toSeq
+      case VecScheduler() => needWakeupFromVlWBPort.map(x => ValidIO(new IssueQueueWBWakeUpBundle(x._2.map(_.exuIdx), backendParam, VlData()))).toSeq
       case _ => Seq()
     }
     MixedVec(intBundle ++ fpBundle ++ vfBundle ++ v0Bundle ++ vlBundle)
   }
 
   def genIQWakeUpSourceValidBundle(implicit p: Parameters): MixedVec[ValidIO[IssueQueueIQWakeUpBundle]] = {
-    MixedVec(exuBlockParams.map(x => ValidIO(new IssueQueueIQWakeUpBundle(x.exuIdx, backendParam, x.copyWakeupOut, x.copyNum))))
+    MixedVec(exuBlockParams.filter(_.isIQWakeUpSource).map(x => ValidIO(new IssueQueueIQWakeUpBundle(x.exuIdx, backendParam, x.copyWakeupOut, x.copyNum))))
   }
 
   def genIQWakeUpSinkValidBundle(implicit p: Parameters): MixedVec[ValidIO[IssueQueueIQWakeUpBundle]] = {
@@ -437,7 +462,7 @@ case class IssueBlockParams(
 
   def genOG2RespBundle(implicit p: Parameters) = {
     implicit val issueBlockParams = this
-    MixedVec(exuBlockParams.map(_ => new Valid(new EntryDeqRespBundle)))
+    MixedVec(exuBlockParams.map(_ => new IssueQueueRespBundle))
   }
 
   def genWbFuBusyTableWriteBundle(implicit p: Parameters) = {

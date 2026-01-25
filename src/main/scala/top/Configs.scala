@@ -42,7 +42,7 @@ import xiangshan.frontend.ibuffer.IBufferParameters
 import freechips.rocketchip.devices.debug._
 import openLLC.OpenLLCParam
 import freechips.rocketchip.diplomacy._
-import xiangshan.backend.regfile.{IntPregParams, VfPregParams}
+import xiangshan.backend.regfile._
 import xiangshan.cache.DCacheParameters
 import xiangshan.cache.mmu.{L2TLBParameters, TLBParameters}
 import device.EnableJtag
@@ -161,11 +161,19 @@ class MinimalConfig(n: Int = 1) extends Config(
         IssueQueueCompEntrySize = 4,
         intPreg = IntPregParams(
           numEntries = 64,
+          numBank = 4,
+          numRead = None,
+          numWrite = None,
+        ),
+        fpPreg = FpPregParams(
+          numEntries = 64,
+          numBank = 1,
           numRead = None,
           numWrite = None,
         ),
         vfPreg = VfPregParams(
           numEntries = 160,
+          numBank = 1,
           numRead = None,
           numWrite = None,
         ),
@@ -272,6 +280,7 @@ class MinimalConfig(n: Int = 1) extends Config(
           ways = 8,
           sets = 2048,
           banks = 4,
+          fullAddressBits = 48,
           clientCaches = Seq(L2Param())
         )),
         L3NBanks = 1
@@ -459,19 +468,78 @@ class FrontendDebugConfig(n: Int = 1) extends Config(
       frontendParameters = p.frontendParameters.copy(
         bpuParameters = p.frontendParameters.bpuParameters.copy(
           EnableBpTrace = true,
+          utageParameters = p.frontendParameters.bpuParameters.utageParameters.copy(
+            EnableTraceAndDebug = true,
+          ),
+          mbtbParameters = p.frontendParameters.bpuParameters.mbtbParameters.copy(
+            EnableMainbtbTrace = true,
+          ),
           tageParameters = p.frontendParameters.bpuParameters.tageParameters.copy(
             EnableTageTrace = true,
-          )
+          ),
+          scParameters = p.frontendParameters.bpuParameters.scParameters.copy(
+            EnableScTrace = true,
+          ),
+        ),
+        icacheParameters = p.frontendParameters.icacheParameters.copy(
+          EnableTrace = true,
         ),
       )
     )}
     case DebugOptionsKey => up(DebugOptionsKey).copy(
       EnableChiselDB = true,
-      EnableRollingDB = true,
       EnableConstantin = true,
-      EnableDebug = true,
-      EnablePerfDebug = true,
     )
+  })
+)
+
+class BackendV2Config(n: Int = 1) extends Config(
+  new DefaultConfig(n).alter((site, here, up) => {
+    case XSTileKey => up(XSTileKey).map { p =>
+      p.copy(
+        EnableBackendV2Config = true,
+        frontendParameters = p.frontendParameters.copy(
+          ibufferParameters = p.frontendParameters.ibufferParameters.copy(
+            NumReadBank = 6
+          )
+        ),
+        DecodeWidth = 6,
+        RenameWidth = 6,
+        RabCommitWidth = 6,
+        RobSize = 208,
+        RabSize = 256,
+        intPreg = IntPregParams(
+          numEntries = 224,
+          numBank    = 1,
+          numRead    = None,
+          numWrite   = None,
+        ),
+        fpPreg = FpPregParams(
+          numEntries = 192,
+          numBank    = 1,
+          numRead    = None,
+          numWrite   = None,
+        ),
+        vfPreg = VfPregParams(
+          numEntries = 128,
+          numBank    = 1,
+          numRead    = None,
+          numWrite   = None,
+        ),
+        v0Preg = V0PregParams(
+          numEntries = 22,
+          numBank    = 1,
+          numRead    = None,
+          numWrite   = None,
+        ),
+        vlPreg = VlPregParams(
+          numEntries = 32,
+          numBank    = 1,
+          numRead    = None,
+          numWrite   = None,
+        ),
+      )
+    }
   })
 )
 

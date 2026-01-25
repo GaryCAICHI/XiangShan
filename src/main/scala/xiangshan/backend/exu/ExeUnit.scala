@@ -23,13 +23,14 @@ import chisel3.util._
 import freechips.rocketchip.diplomacy.{LazyModule, LazyModuleImp}
 import utility._
 import xiangshan.backend.fu.{CSRFileIO, FenceIO, FuType, FuncUnitInput, UncertainLatency}
-import xiangshan.backend.Bundles.{ExuInput, ExuOutput, IssueQueueIQWakeUpBundle}
+import xiangshan.backend.Bundles.{ExuInput, ExuOutput, IssueQueueIQWakeUpBundle, VIAluCtrlSignals}
 import xiangshan.{AddrTransType, FPUCtrlSignals, HasXSParameter, Redirect, Resolve, XSBundle, XSModule}
 import xiangshan.backend.datapath.WbConfig._
 import xiangshan.backend.fu.vector.Bundles.{VType, Vxrm}
 import xiangshan.backend.fu.fpu.Bundles.Frm
 import xiangshan.backend.fu.wrapper.{CSRInput, CSRToDecode}
 import xiangshan.backend.fu.FuConfig.{AluCfg, I2fCfg, needUncertainWakeupFuConfigs}
+import xiangshan._
 
 class ExeUnitIO(params: ExeUnitParams)(implicit p: Parameters) extends XSBundle {
   val flush = Flipped(ValidIO(new Redirect()))
@@ -45,9 +46,9 @@ class ExeUnitIO(params: ExeUnitParams)(implicit p: Parameters) extends XSBundle 
   val fenceio = Option.when(params.hasFence)(new FenceIO)
   val frm = Option.when(params.needSrcFrm)(Input(Frm()))
   val vxrm = Option.when(params.needSrcVxrm)(Input(Vxrm()))
-  val vtype = Option.when(params.writeVConfig)((Valid(new VType)))
-  val vlIsZero = Option.when(params.writeVConfig)(Output(Bool()))
-  val vlIsVlmax = Option.when(params.writeVConfig)(Output(Bool()))
+  val vtype = Option.when(params.writeVlRf)((Valid(new VType)))
+  val vlIsZero = Option.when(params.writeVlRf)(Output(Bool()))
+  val vlIsVlmax = Option.when(params.writeVlRf)(Output(Bool()))
   val instrAddrTransType = Option.when(params.hasJmpFu || params.hasBrhFu || params.hasAluFu)(Input(new AddrTransType))
 }
 
@@ -179,6 +180,7 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
       sink.bits.ctrl.fuOpType    := source.bits.fuOpType
       sink.bits.ctrl.robIdx      := source.bits.robIdx
       sink.bits.ctrl.pdest       := source.bits.pdest
+      sink.bits.ctrl.pdestVl     .foreach(x => x := source.bits.pdestVl.get)
       sink.bits.ctrl.rfWen       .foreach(x => x := source.bits.rfWen.get)
       sink.bits.ctrl.fpWen       .foreach(x => x := source.bits.fpWen.get)
       sink.bits.ctrl.vecWen      .foreach(x => x := source.bits.vecWen.get)
@@ -195,8 +197,9 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
       sink.bits.ctrl.vpu         .foreach(x => x.fpu.isFpToVecInst := 0.U)
       sink.bits.ctrl.vpu         .foreach(x => x.fpu.isFP32Instr   := 0.U)
       sink.bits.ctrl.vpu         .foreach(x => x.fpu.isFP64Instr   := 0.U)
-      sink.bits.perfDebugInfo    := source.bits.perfDebugInfo
-      sink.bits.debug_seqNum     := source.bits.debug_seqNum
+      sink.bits.ctrl.vialuCtrl   .foreach(x => x := source.bits.vialuCtrl.get)
+      sink.bits.perfDebugInfo    .foreach(_ := source.bits.perfDebugInfo.get)
+      sink.bits.debug_seqNum     .foreach(_ := source.bits.debug_seqNum.get)
   }
   funcUnits.filter(_.cfg.latency.latencyVal.nonEmpty).map{ fu =>
     val latency = fu.cfg.latency.latencyVal.getOrElse(0)
@@ -210,6 +213,7 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
       sink.fuOpType := source.fuOpType
       sink.robIdx := source.robIdx
       sink.pdest := source.pdest
+      sink.pdestVl.foreach(_ := source.pdestVl.get)
       sink.rfWen.foreach(x => x := source.rfWen.get)
       sink.fpWen.foreach(x => x := source.fpWen.get)
       sink.vecWen.foreach(x => x := source.vecWen.get)
@@ -226,9 +230,12 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
       sink.vpu.foreach(x => x.fpu.isFpToVecInst := 0.U)
       sink.vpu.foreach(x => x.fpu.isFP32Instr := 0.U)
       sink.vpu.foreach(x => x.fpu.isFP64Instr := 0.U)
+      sink.vpu.foreach(x => x.maskVecGen := 0.U)
+      sink.vialuCtrl.foreach(x => x := 0.U.asTypeOf(new VIAluCtrlSignals))
       val sinkData = fu.io.in.bits.dataPipe.get(i)
       val sourceData = inPipe._1(i)
       sinkData.src.zip(sourceData.src).foreach { case (fuSrc, exuSrc) => fuSrc := exuSrc }
+      sinkData.vl.foreach(_ := sourceData.vl.get)
       sinkData.pc.foreach(x => x := sourceData.pc.get)
       sinkData.nextPcOffset.foreach(x => x := sourceData.nextPcOffset.get)
       sinkData.imm := sourceData.imm
@@ -240,6 +247,7 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
     if(fu.cfg.srcNeedCopy) {
       (fu.io.in.bits.data.src).zip(io.in.bits.copySrc.get(idx)).foreach { case(fuSrc, copySrc) => fuSrc := copySrc }
     }
+    fu.io.in.bits.data.vl.foreach(_ := io.in.bits.vl.get)
   }
 
   private val OutresVecs = funcUnits.map { fu =>
@@ -368,6 +376,7 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
       outBits(0).ctrl.v0Wen.foreach(x =>  out.bits.v0Wen  := Mux1H(outOH, outBits.map(_.ctrl.v0Wen .get)))
       outBits(0).ctrl.vlWen.foreach(x =>  out.bits.vlWen  := Mux1H(outOH, outBits.map(_.ctrl.vlWen .get)))
       out.bits.pdest := Mux1H(outOH, outBits.map(_.ctrl.pdest))
+      out.bits.pdestVl := Mux1H(outOH, outBits.map(_.ctrl.pdestVl.getOrElse(0.U)))
     }
   }
   }
@@ -375,6 +384,7 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
   io.out.bits.data := VecInit(outDataVec.zip(outDataValidOH).map{ case(data, validOH) => Mux1H(validOH, data)})
   io.out.bits.robIdx := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.ctrl.robIdx))
   io.out.bits.pdest := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.ctrl.pdest))
+  io.out.bits.pdestVl.foreach(_ := Mux1H(fuOutValidOH, funcUnits.map(_.io.out.bits.ctrl.pdestVl.getOrElse(0.U))))
   val F2IIntWen = io.F2IDataIn.getOrElse(0.U.asTypeOf(ValidIO(UInt(XLEN.W)))).valid
   io.out.bits.intWen.foreach(x => x := Mux1H(fuOutValidOH, fuIntWenVec) || F2IIntWen)
   io.out.bits.fpWen.foreach(x => x := Mux1H(fuOutValidOH, fuFpWenVec))
@@ -417,8 +427,8 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
   // debug info
   io.out.bits.debug     := 0.U.asTypeOf(io.out.bits.debug)
   io.out.bits.debug.isPerfCnt := funcUnits.map(_.io.csrio.map(_.isPerfCnt)).map(_.getOrElse(false.B)).reduce(_ || _)
-  io.out.bits.debugInfo := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.perfDebugInfo))
-  io.out.bits.debug_seqNum := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.debug_seqNum))
+  io.out.bits.perfDebugInfo.foreach(_ := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.perfDebugInfo.getOrElse(0.U.asTypeOf(new PerfDebugInfo)))))
+  io.out.bits.debug_seqNum.foreach(_ := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.debug_seqNum.getOrElse(0.U.asTypeOf(InstSeqNum())))))
 }
 
 class DispatcherIO[T <: Data](private val gen: T, n: Int) extends Bundle {

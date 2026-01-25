@@ -21,7 +21,7 @@ class AddrAddModule(implicit p: Parameters) extends XSModule {
     val target = Output(UInt(XLEN.W))
     val nextPcOffset = Input(UInt((FetchBlockInstOffsetWidth + 2).W))
   })
-  val immMinWidth = FuConfig.BrhCfg.immType.map(x => SelImm.getImmUnion(x).len).max
+  val immMinWidth = FuConfig.BrhCfg.immType.map(x => x.len).max
   print(s"[Branch]: immMinWidth = $immMinWidth\n")
   io.target := SignExt(Mux(io.taken,
     io.pcExtend + SignExt(io.imm(immMinWidth + 2, 0), VAddrBits + 1),
@@ -57,7 +57,7 @@ class BranchUnit(cfg: FuConfig)(implicit p: Parameters) extends FuncUnit(cfg) {
   io.out.bits.res.data := 0.U
   io.out.bits.res.redirect.get match {
     case redirect =>
-      redirect.valid := io.out.valid
+      redirect.valid := io.out.valid && (isMisPred || redirect.bits.hasBackendFault)
       redirect.bits := 0.U.asTypeOf(io.out.bits.res.redirect.get.bits)
       redirect.bits.level := RedirectLevel.flushAfter
       redirect.bits.robIdx := io.in.bits.ctrl.robIdx

@@ -23,7 +23,6 @@ import utility.XSPerfHistogram
 import xiangshan.frontend.PrunedAddr
 import xiangshan.frontend.bpu.BranchInfo
 import xiangshan.frontend.bpu.Prediction
-import xiangshan.frontend.bpu.SaturateCounter
 import xiangshan.frontend.bpu.StageCtrl
 
 class MainBtbAlignBank(
@@ -43,7 +42,6 @@ class MainBtbAlignBank(
         val predictions: Vec[Valid[Prediction]] = Vec(NumWay, Valid(new Prediction))
         val metas:       Vec[MainBtbMetaEntry]  = Vec(NumWay, new MainBtbMetaEntry)
       }
-
       // don't need Valid or Decoupled here, AlignBank's pipeline is coupled with top, so we use stageCtrl to control
       val req: Req = Input(new Req)
 
@@ -64,12 +62,23 @@ class MainBtbAlignBank(
 
       val req: Valid[Req] = Flipped(Valid(new Req))
     }
+    class Trace extends Bundle {
+      val needWrite: Bool         = Bool()
+      val setIdx:    UInt         = UInt(SetIdxLen.W)
+      val bankIdx:   UInt         = UInt(log2Ceil(NumInternalBanks).W)
+      val wayIdx:    UInt         = UInt(log2Ceil(NumWay).W)
+      val entry:     MainBtbEntry = new MainBtbEntry
+    }
 
     val resetDone: Bool      = Output(Bool())
     val stageCtrl: StageCtrl = Input(new StageCtrl)
 
     val read:  Read  = new Read
     val write: Write = new Write
+    val trace: Trace = Output(new Trace)
+
+    // final s3_takenMask (mbtb + tage + sc), used to touch replacer accurately
+    val s3_takenMask: Vec[Bool] = Input(Vec(NumWay, Bool()))
   }
 
   val io: MainBtbAlignBankIO = IO(new MainBtbAlignBankIO)
@@ -103,10 +112,7 @@ class MainBtbAlignBank(
   assert(!s0_fire || s0_alignBankIdx === alignIdx.U, "MainBtbAlignBank alignIdx mismatch")
 
   internalBanks.zipWithIndex.foreach { case (b, i) =>
-    // NOTE: if crossPage, we need to drop the entries to satisfy Ifu/ICache's requirement,
-    //       so we also can drop read req to save power.
-    // FIXME: but this might be timing critical, need to be verified.
-    b.io.read.req.valid       := s0_fire && s0_internalBankMask(i) && !s0_crossPage
+    b.io.read.req.valid       := s0_fire && s0_internalBankMask(i)
     b.io.read.req.bits.setIdx := s0_setIdx
   }
 
@@ -174,22 +180,17 @@ class MainBtbAlignBank(
   private val s2_hitMask = VecInit(r.resp.predictions.map(_.valid))
   dontTouch(s2_hitMask)
 
-  // update replacer
-  /* touch taken entries only: not-taken conditional entries are considered not very useful and should be killed first
-   * TODO: As tage/sc results have worse timing and more complexity, here we use baseTable (in mbtb) only,
-   *       hopefully this is enough for replacer updates.
+  /* *** s3 ***
+   * touch replacer using final takenMask (mbtb + tage + sc)
    */
-  private val s2_takenMask = VecInit(r.resp.predictions.map { pred =>
-    pred.valid && (
-      pred.bits.attribute.isConditional && pred.bits.taken ||
-        pred.bits.attribute.isDirect ||
-        pred.bits.attribute.isIndirect
-    )
-  })
+  private val s3_fire           = io.stageCtrl.s3_fire
+  private val s3_replacerSetIdx = RegEnable(getReplacerSetIndex(s2_startPc), s2_fire)
+  private val s3_takenMask      = io.s3_takenMask
 
-  replacer.io.predictTouch.valid        := s2_fire && s2_takenMask.reduce(_ || _)
-  replacer.io.predictTouch.bits.setIdx  := getReplacerSetIndex(s2_startPc)
-  replacer.io.predictTouch.bits.wayMask := s2_takenMask.asUInt
+  // touch taken entries only: not-taken conditional entries are considered not very useful and should be killed first
+  replacer.io.predictTouch.valid        := s3_fire && s3_takenMask.reduce(_ || _)
+  replacer.io.predictTouch.bits.setIdx  := s3_replacerSetIdx
+  replacer.io.predictTouch.bits.wayMask := s3_takenMask.asUInt
 
   /* *** t1 ***
    * send write req to internal banks (srams)
@@ -246,7 +247,7 @@ class MainBtbAlignBank(
   replacer.io.trainTouch.bits.wayMask := t1_entryWayMask
 
   /* *** update counter *** */
-  private val t1_newCounters    = Wire(Vec(NumWay, new SaturateCounter(TakenCntWidth)))
+  private val t1_newCounters    = Wire(Vec(NumWay, TakenCounter()))
   private val t1_counterWayMask = Wire(Vec(NumWay, Bool()))
 
   t1_meta.zipWithIndex.foreach { case (meta, i) =>
@@ -257,8 +258,8 @@ class MainBtbAlignBank(
 
     val entryOverridden = t1_entryNeedWrite && t1_entryWayMask(i)
 
-    t1_counterWayMask(i)    := entryOverridden || hitMask.reduce(_ || _)
-    t1_newCounters(i).value := Mux(entryOverridden, meta.counter.getWeakPositive(), meta.counter.getUpdate(actualTaken))
+    t1_counterWayMask(i) := entryOverridden || hitMask.reduce(_ || _)
+    t1_newCounters(i)    := Mux(entryOverridden, TakenCounter.WeakPositive, meta.counter.getUpdate(actualTaken))
   }
 
   // write counter anytime when needed
@@ -280,13 +281,19 @@ class MainBtbAlignBank(
     b.io.flush.req.bits.wayMask := s2_multiHitMask
   }
 
+  // mainBTB trace bundle
+  io.trace.needWrite := t1_fire && t1_entryNeedWrite
+  io.trace.setIdx    := t1_setIdx
+  io.trace.bankIdx   := t1_internalBankIdx
+  io.trace.wayIdx    := PriorityEncoder(t1_entryWayMask.asUInt)
+  io.trace.entry     := t1_entry
   XSPerfHistogram("multihit_count", PopCount(s2_multiHitMask), s2_fire, 0, NumWay)
 
   XSPerfAccumulate(
     "", // no common prefix is needed
     t1_fire && t1_mispredictInfo.valid,
     Seq(
-      ("allocate", !t1_hit),
+      ("allocate", t1_entryNeedWrite),
       ("fixTarget", t1_hit && t1_mispredictInfo.bits.attribute.needIttage),
       ("fixAttribute", t1_hit && !(t1_mispredictInfo.bits.attribute === Mux1H(t1_hitMask, t1_meta.map(_.attribute))))
     )

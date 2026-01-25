@@ -20,6 +20,8 @@ import chisel3.util._
 import difftest.DiffRefillEvent
 import difftest.DifftestModule
 import org.chipsalliance.cde.config.Parameters
+import utility.BoolStopWatch
+import utility.ChiselDB
 import utility.DataHoldBypass
 import utility.ValidHold
 import utility.XSPerfAccumulate
@@ -204,6 +206,7 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
     RegNext(s0_fire) && s1_doubleline
   ))
   private val s1_bankSramValid = getBankValid(s1_sramValid, s1_offset)
+  dontTouch(s1_bankSramValid)
 
   // mshr: valid when fromMiss.valid
   private val s1_mshrValid = checkMshrHitVec(
@@ -213,17 +216,8 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
     VecInit(s1_valid, s1_valid && s1_doubleline),
     allowCorrupt = true // we also need to update registers when fromMiss.bits.corrupt
   )
-  private val s1_mshrDatas = fromMiss.bits.data.asTypeOf(Vec(DataBanks, UInt(ICacheDataBits.W)))
-
-  // select data
   private val s1_bankMshrValid = getBankValid(s1_mshrValid, s1_offset)
-
-  private val s1_dataIsFromMshr = VecInit((0 until DataBanks).map { i =>
-    DataHoldBypass(
-      s1_bankMshrValid(i),
-      s1_bankMshrValid(i) || s1_bankSramValid(i)
-    )
-  })
+  private val s1_mshrDatas     = fromMiss.bits.data.asTypeOf(Vec(DataBanks, UInt(ICacheDataBits.W)))
 
   // select maybeRvc
   private val s1_sramMaybeRvcMap =
@@ -307,7 +301,7 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
     s1_sramCodes,
     eccEnable,
     getBankSel(s1_offset, s1_valid, s1_doubleline),
-    VecInit(s1_dataIsFromMshr.map(!_)),
+    s1_bankSramValid,
     s1_sramHits
   )
 
@@ -335,31 +329,37 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
     io.errors(i).bits.opType        := DontCare
     io.errors(i).bits.opType.fetch  := true.B
   }
-  // flush metaArray to prepare for re-fetch
-  (0 until PortNumber).foreach { i =>
-    toMetaFlush(i).valid        := (s1_metaCorrupt(i) || s1_dataCorrupt(i)) && RegNext(s0_fire)
-    toMetaFlush(i).bits.vSetIdx := s1_vSetIdx(i)
-    // if is meta corrupt, clear all way (since waymask may be unreliable)
-    // if is data corrupt, only clear the way that has error
-    toMetaFlush(i).bits.waymask := Mux(s1_metaCorrupt(i), Fill(nWays, true.B), s1_waymasks(i))
+
+  // If EnableCorruptRefetch, flush metaArray to prepare for re-fetch
+  toMetaFlush.zipWithIndex.foreach { case (flush, i) =>
+    if (EnableCorruptRefetch) {
+      flush.valid        := (s1_metaCorrupt(i) || s1_dataCorrupt(i)) && RegNext(s0_fire)
+      flush.bits.vSetIdx := s1_vSetIdx(i)
+      // if is meta corrupt, clear all way (since waymask may be unreliable)
+      // if is data corrupt, only clear the way that has error
+      flush.bits.waymask := Mux(s1_metaCorrupt(i), Fill(nWays, true.B), s1_waymasks(i))
+    } else {
+      flush.valid := false.B
+      flush.bits  := DontCare
+    }
   }
+
   // PERF: count the number of data parity errors
   XSPerfAccumulate("data_corrupt_0", s1_dataCorrupt(0) && RegNext(s0_fire))
   XSPerfAccumulate("data_corrupt_1", s1_dataCorrupt(1) && RegNext(s0_fire))
   XSPerfAccumulate("meta_corrupt_0", s1_metaCorrupt(0) && RegNext(s0_fire))
   XSPerfAccumulate("meta_corrupt_1", s1_metaCorrupt(1) && RegNext(s0_fire))
-  // TEST: stop simulation if parity error is detected, and dump wave
-//  val (assert_valid, assert_val) = DelayNWithValid(s2_metaCorrupt.reduce(_ || _), s2_valid, 1000)
-//  assert(!(assert_valid && assert_val))
-//  val (assert_valid, assert_val) = DelayNWithValid(s2_dataCorrupt.reduce(_ || _), s2_valid, 1000)
-//  assert(!(assert_valid && assert_val))
 
+  // If enable CorruptRefetch, set s1_shouldFetch flag according to ecc check result, otherwise always false
   private val s1_corruptRefetch = VecInit((0 until PortNumber).map { i =>
-    ValidHoldBypass(
-      (s1_metaCorrupt(i) || s1_dataCorrupt(i)) && RegNext(s0_fire),
-      s1_mshrValid(i), // clear re-fetch flag when re-fetched from mshr
-      s1_flush
-    )
+    if (EnableCorruptRefetch)
+      ValidHoldBypass(
+        (s1_metaCorrupt(i) || s1_dataCorrupt(i)) && RegNext(s0_fire),
+        s1_mshrValid(i), // clear re-fetch flag when re-fetched from mshr
+        s1_flush
+      )
+    else
+      false.B
   })
 
   /* *** Fetch when miss or corrupt *** */
@@ -402,10 +402,17 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
     val canAssert   = s1_valid && portValid
     ExceptionType.fromTileLink(realCorrupt, realDenied, canAssert)
   }.reduce(_ || _)
-  // NOTE: do NOT raise af if meta/data corrupt is detected, they are automatically recovered by re-fetching from L2
 
-  // merge s2 exceptions, itlb/pmp has the highest priority, then l2
-  private val s1_exceptionOut = s1_exception || s1_tlException
+  // If EnableCorruptRefetch, no need to raise exception as it's been auto-recovered by re-fetching from L2
+  // otherwise, raise Hardware Error Exception
+  private val s1_eccException =
+    if (EnableCorruptRefetch)
+      ExceptionType.None
+    else
+      ExceptionType.fromEcc(s1_metaCorrupt.reduce(_ || _) || s1_dataCorrupt.reduce(_ || _), s1_valid)
+
+  // merge all exceptions, itlb/pmp has the highest priority, then l2/ecc
+  private val s1_exceptionOut = s1_exception || s1_tlException || s1_eccException
 
   /* *** send response to IFU *** */
   toIfu.valid                   := s1_fire
@@ -439,30 +446,44 @@ class ICacheMainPipe(implicit p: Parameters) extends ICacheModule
   XSPerfAccumulate("stallCycles_fetch_icacheMain_dataArray", s0_valid && !toData.ready)
   XSPerfAccumulate("stallCycles_fetch_icacheMain_missUnit", s1_valid && !s1_fetchFinish)
 
-  // class ICacheTouchDB(implicit p: Parameters) extends ICacheBundle{
-  //   val blkPAddr  = UInt((PAddrBits - blockOffBits).W)
-  //   val vSetIdx   = UInt(idxBits.W)
-  //   val waymask   = UInt(wayBits.W)
-  // }
+  private class AccessTrace extends Bundle {
+    val vAddr:      UInt      = UInt(VAddrBits.W)
+    val pAddr:      UInt      = UInt(PAddrBits.W)
+    val wayMask:    Vec[UInt] = Vec(PortNumber, UInt(nWays.W))
+    val crossLine:  Bool      = Bool()
+    val waitRefill: UInt      = UInt(XLEN.W)
+    val rawHits:    Vec[Bool] = Vec(PortNumber, Bool())
 
-  // private val isWriteICacheTouchTable =
-  //   WireInit(Constantin.createRecord("isWriteICacheTouchTable" + p(XSCoreParamsKey).HartId.toString))
-  // private val ICacheTouchTable =
-  //   ChiselDB.createTable("ICacheTouchTable" + p(XSCoreParamsKey).HartId.toString, new ICacheTouchDB)
+    val exception: ExceptionType = new ExceptionType
+    val pmpMmio:   Bool          = Bool()
+    val itlbPbmt:  UInt          = UInt(Pbmt.width.W)
+  }
 
-  // val ICacheTouchDumpData = Wire(Vec(PortNumber, new ICacheTouchDB))
-  // (0 until PortNumber).foreach{ i =>
-  //   ICacheTouchDumpData(i).blkPAddr  := getBlkAddr(s1_pAddr(i))
-  //   ICacheTouchDumpData(i).vSetIdx   := s1_vSetIdx(i)
-  //   ICacheTouchDumpData(i).waymask   := OHToUInt(s1_tag_match_vec(i))
-  //   ICacheTouchTable.log(
-  //     data  = ICacheTouchDumpData(i),
-  //     en    = io.replacerTouch.req(i).valid,
-  //     site  = "req_" + i.toString,
-  //     clock = clock,
-  //     reset = reset
-  //   )
-  // }
+  private val perf_waitRefill = RegInit(0.U(XLEN.W))
+  when(s1_valid && !s1_fetchFinish) {
+    perf_waitRefill := perf_waitRefill + 1.U
+  }.elsewhen(s1_fetchFinish || s1_flush) {
+    perf_waitRefill := 0.U
+  }
+
+  private val accessTrace = Wire(new AccessTrace)
+  accessTrace.vAddr      := s1_vAddr.head.toUInt
+  accessTrace.pAddr      := getPAddrFromPTag(s1_vAddr.head, s1_pTag).toUInt
+  accessTrace.wayMask    := s1_waymasks
+  accessTrace.crossLine  := s1_doubleline
+  accessTrace.waitRefill := perf_waitRefill
+  accessTrace.exception  := s1_exceptionOut
+  accessTrace.pmpMmio    := s1_pmpMmio
+  accessTrace.itlbPbmt   := s1_itlbPbmt
+  accessTrace.rawHits    := s1_rawHits
+
+  private val accessTable = ChiselDB.createTable("ICacheAccessTable", new AccessTrace, EnableTrace)
+  accessTable.log(
+    data = accessTrace,
+    en = s1_fire,
+    clock = clock,
+    reset = reset
+  )
 
   /* *** difftest refill check *** */
   if (env.EnableDifftest) {

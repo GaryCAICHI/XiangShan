@@ -41,8 +41,8 @@ class MicroTageTable(
       val taken:       Bool            = Bool()
       val cfiPosition: UInt            = UInt(CfiPositionWidth.W)
       val useful:      UInt            = UInt(UsefulWidth.W)
-      val hitTakenCtr: SaturateCounter = new SaturateCounter(TakenCtrWidth)
-      val hitUseful:   SaturateCounter = new SaturateCounter(UsefulWidth)
+      val hitTakenCtr: SaturateCounter = TakenCounter()
+      val hitUseful:   SaturateCounter = UsefulCounter()
     }
     class MicroTageUpdate extends Bundle {
       val startPc:                PrunedAddr            = new PrunedAddr(VAddrBits)
@@ -68,13 +68,13 @@ class MicroTageTable(
   class MicroTageEntry() extends MicroTageBundle {
     val valid:       Bool            = Bool()
     val tag:         UInt            = UInt(tagLen.W)
-    val takenCtr:    SaturateCounter = new SaturateCounter(TakenCtrWidth)
+    val takenCtr:    SaturateCounter = TakenCounter()
     val cfiPosition: UInt            = UInt(CfiPositionWidth.W)
-    // val useful:      SaturateCounter = new SaturateCounter(UsefulWidth)
+    // val useful:      SaturateCounter = UsefulCounter()
   }
   val io                    = IO(new MicroTageTableIO)
   private val entries       = RegInit(VecInit(Seq.fill(numSets)(0.U.asTypeOf(new MicroTageEntry))))
-  private val usefulEntries = RegInit(VecInit(Seq.fill(numSets)(0.U.asTypeOf(new SaturateCounter(UsefulWidth)))))
+  private val usefulEntries = RegInit(VecInit(Seq.fill(numSets)(UsefulCounter.Zero)))
 
   val idxFhInfo    = new FoldedHistoryInfo(histLen, min(log2Ceil(numSets), histLen))
   val tagFhInfo    = new FoldedHistoryInfo(histLen, min(histLen, histBitsInTag))
@@ -87,7 +87,8 @@ class MicroTageTable(
     val tagFh       = allFh.getHistWithInfo(tagFhInfo).foldedHist
     val altTagFh    = allFh.getHistWithInfo(altTagFhInfo).foldedHist
     val idx = if (idxFhInfo.FoldedLength < log2Ceil(numSets)) {
-      (unhashedIdx ^ Cat(idxFh, idxFh))(log2Ceil(numSets) - 1, 0)
+      val foldShift = log2Ceil(numSets) - idxFhInfo.FoldedLength
+      (unhashedIdx ^ Cat(0.U(foldShift.W), idxFh) ^ (idxFh << foldShift))(log2Ceil(numSets) - 1, 0)
     } else {
       (unhashedIdx ^ idxFh)(log2Ceil(numSets) - 1, 0)
     }
@@ -121,9 +122,14 @@ class MicroTageTable(
   private val updateEntry = Wire(new MicroTageEntry)
   updateEntry.valid := true.B
   updateEntry.tag   := trainTag
-  updateEntry.takenCtr.value := Mux(
+  updateEntry.takenCtr := Mux(
     io.update.bits.allocValid,
-    oldTakenCtr.getNeutral,
+    // oldTakenCtr.getNeutral,
+    Mux(
+      io.update.bits.allocTaken,
+      TakenCounter.WeakPositive,
+      TakenCounter.WeakNegative
+    ),
     oldTakenCtr.getUpdate(io.update.bits.updateTaken)
   )
 
@@ -135,7 +141,8 @@ class MicroTageTable(
 
   private val updateUseful = Mux(
     io.update.bits.allocValid,
-    oldUseful.getNeutral,
+    if (tableId == 0) { UsefulCounter.WeakNegative }
+    else { UsefulCounter.WeakPositive },
     oldUseful.getUpdate(io.update.bits.usefulCorrect)
   )
 
@@ -145,12 +152,16 @@ class MicroTageTable(
   }
 
   when(io.update.valid && (io.update.bits.usefulValid || io.update.bits.allocValid)) {
-    usefulEntries(trainIdx).value := updateUseful // updateEntry.useful
+    usefulEntries(trainIdx) := updateUseful // updateEntry.useful
   }
 
   when(io.usefulReset) {
     usefulEntries.zipWithIndex.foreach { case (entry, i) =>
-      usefulEntries(i).value := entry.value >> 1.U
+      if (tableId == 0) {
+        usefulEntries(i).selfDecrease()
+      } else {
+        usefulEntries(i).value := entry.value >> 1.U
+      }
     }
   }
 

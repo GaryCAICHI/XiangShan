@@ -9,6 +9,7 @@ import xiangshan.backend.datapath.DataConfig.DataConfig
 import xiangshan.backend.datapath.RdConfig._
 import xiangshan.backend.datapath.WbConfig._
 import xiangshan.backend.datapath.{DataConfig, WakeUpConfig}
+import xiangshan.backend.decode.Imm
 import xiangshan.backend.fu.{FuConfig, FuType}
 import xiangshan.backend.fu.FuConfig.{BrhCfg, JmpCfg, needUncertainWakeupFuConfigs}
 import xiangshan.backend.issue.{FpScheduler, IntScheduler, IssueBlockParams, SchedulerType, VecScheduler}
@@ -23,10 +24,15 @@ case class ExeUnitParams(
   copyWakeupOut: Boolean = false,
   copyDistance: Int = 1,
   fakeUnit      : Boolean = false,
+  vlRD          : VlRD = null,
+  vlWB          : VlWB = null,
 )(
   implicit
   val schdType: SchedulerType,
 ) {
+  require(rfrPortConfigs.forall(!_.exists(_.isInstanceOf[VlRD])), "VlRD should not appear in rfrPortConfigs")
+  require(!wbPortConfigs.exists(_.isInstanceOf[VlWB]), "VlWB should not appear in wbPortConfigs")
+
   // calculated configs
   var iqWakeUpSourcePairs: Seq[WakeUpConfig] = Seq()
   var iqWakeUpSinkPairs: Seq[WakeUpConfig] = Seq()
@@ -50,7 +56,7 @@ case class ExeUnitParams(
   val readFpRf: Boolean = numFpSrc > 0
   val readVecRf: Boolean = numVecSrc > 0
   val readVfRf: Boolean = numVfSrc > 0
-  val readVlRf: Boolean = numVlSrc > 0
+  val readVlRf: Boolean = fuConfigs.exists(_.readVl)
   val writeIntRf: Boolean = fuConfigs.map(_.writeIntRf).reduce(_ || _)
   val writeFpRf: Boolean = fuConfigs.map(_.writeFpRf).reduce(_ || _)
   val writeVecRf: Boolean = fuConfigs.map(_.writeVecRf).reduce(_ || _)
@@ -77,7 +83,7 @@ case class ExeUnitParams(
   val needExceptionGen: Boolean = exceptionOut.nonEmpty || flushPipe || replayInst || trigger
   val needPc: Boolean = fuConfigs.map(_.needPc).reduce(_ || _)
   def aluNeedPc: Boolean = issueBlockParam.aluDeqNeedPickJump
-  def needFtqPtr: Boolean = this.needPc || this.replayInst || this.hasStoreAddrFu || this.hasCSR
+  def needFtqPtr: Boolean = this.needPc || this.replayInst || this.hasStoreAddrFu || this.hasCSR || this.hasVLoadFu
   def needFtqPtrOffset: Boolean = needFtqPtr || this.aluNeedPc
   val needTarget: Boolean = fuConfigs.map(_.needTargetPc).reduce(_ || _)
   val needPdInfo: Boolean = fuConfigs.map(_.needPdInfo).reduce(_ || _)
@@ -85,6 +91,7 @@ case class ExeUnitParams(
   val needSrcVxrm: Boolean = fuConfigs.map(_.needSrcVxrm).reduce(_ || _)
   val needFPUCtrl: Boolean = fuConfigs.map(_.needFPUCtrl).reduce(_ || _)
   val needVPUCtrl: Boolean = fuConfigs.map(_.needVecCtrl).reduce(_ || _)
+  val needVIaluCtrl: Boolean = fuConfigs.map(_.needVIaluCtrl).reduce(_ || _)
   val writeVConfig: Boolean = fuConfigs.map(_.writeVlRf).reduce(_ || _)
   val writeVType: Boolean = fuConfigs.map(_.writeVType).reduce(_ || _)
   val needCriticalErrors: Boolean = fuConfigs.map(_.needCriticalErrors).reduce(_ || _)
@@ -330,13 +337,17 @@ case class ExeUnitParams(
 
   def hasVecFu = fuConfigs.map(x => FuConfig.VecArithFuConfigs.contains(x)).reduce(_ || _)
 
+  def hasVIAluFu = fuConfigs.map(_.fuType == FuType.vialuF).reduce(_ || _)
+
   def CanCompress = !hasBrhFu || (hasBrhFu && hasi2vFu)
+
+  def hasMaskWakeUp = fuConfigs.map(_.maskWakeUp).reduce(_ || _)
 
   def getSrcDataType(srcIdx: Int): Set[DataConfig] = {
     fuConfigs.map(_.getSrcDataType(srcIdx)).reduce(_ ++ _)
   }
 
-  def immType: Set[UInt] = fuConfigs.map(x => x.immType).reduce(_ ++ _)
+  def immType: Set[Imm] = fuConfigs.map(x => x.immType).reduce(_ ++ _)
 
   def getWBSource: SchedulerType = {
     schdType
@@ -410,10 +421,8 @@ case class ExeUnitParams(
     }
   }
 
-  def getVlWBPort = {
-    wbPortConfigs.collectFirst {
-      case x: VlWB => x
-    }
+  def getVlWBPort: Option[VlWB] = {
+    Option(vlWB)
   }
 
   /**
@@ -444,12 +453,11 @@ case class ExeUnitParams(
     *
     * @example
     * {{{
-    *   fuCfg.srcData = Seq(VecData(), VecData(), VecData(), V0Data(), VlData())
+    *   fuCfg.srcData = Seq(VecData(), VecData(), VecData(), V0Data())
     *   getRfReadSrcIdx(VecData()) = Seq(0, 1, 2)
     *   getRfReadSrcIdx(V0Data()) = Seq(3)
-    *   getRfReadSrcIdx(VlData()) = Seq(4)
     * }}}
-    * @return Map[DataConfig -> Seq[indices]]
+    * @return Map[DataConfig -> Seq[indices] ]
     */
   def getRfReadSrcIdx: Map[DataConfig, Seq[Int]] = {
     val dataCfgs = DataConfig.RegSrcDataSet

@@ -40,6 +40,7 @@ import xiangshan.mem.{LqPtr, LsqEnqIO, SqPtr}
 import xiangshan.backend.issue.{FpScheduler, IntScheduler, VecScheduler}
 import xiangshan.backend.trace._
 import xiangshan.frontend.bpu.BranchAttribute
+import xiangshan.Redirect.findOldestRedirect
 
 class CtrlToFtqIO(implicit p: Parameters) extends XSBundle {
   val redirect = Valid(new Redirect)
@@ -137,7 +138,7 @@ class CtrlBlockImp(
     val delayed = Wire(Valid(new ExuOutput(x.bits.params)))
     delayed.valid := GatedValidRegNext(valid && !killedByOlder)
     delayed.bits := RegEnable(x.bits, x.valid)
-    delayed.bits.debugInfo.writebackTime := GTimer()
+    delayed.bits.perfDebugInfo.foreach(_.writebackTime := GTimer())
     delayed
   }).toSeq
   private val delayedWriteBack = Wire(chiselTypeOf(io.fromWB.wbData))
@@ -161,7 +162,8 @@ class CtrlBlockImp(
   val memVloadWbData = io.fromWB.wbData.filter(x => x.bits.params.hasVLoadFu)
   private val delayedNotFlushedWriteBackNums = wbData.map(x => {
     val valid = x.valid
-    val killedByOlder = x.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
+    val oldestRedirect = findOldestRedirect(findOldestRedirect(s2_s4_redirect, s3_s5_redirect), s1_s3_redirect)
+    val killedByOlder = x.bits.robIdx.needFlush(oldestRedirect)
     val delayed = Wire(Valid(UInt(io.fromWB.wbData.size.U.getWidth.W)))
     delayed.valid := GatedValidRegNext(valid && !killedByOlder)
     val isIntSche = intScheWbData.contains(x)
@@ -189,34 +191,12 @@ class CtrlBlockImp(
       Seq(x)
     }
     val sameRobidxBools = VecInit(canSameRobidxWbData.map( wb => {
-      val killedByOlderThat = wb.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect, s3_s5_redirect))
+      val killedByOlderThat = wb.bits.robIdx.needFlush(oldestRedirect)
       (wb.bits.robIdx === x.bits.robIdx) && wb.valid && x.valid && !killedByOlderThat && !killedByOlder
     }).toSeq)
     delayed.bits := RegEnable(PopCount(sameRobidxBools), x.valid)
     delayed
   }).toSeq
-
-  private val exuRedirects: Seq[ValidIO[Redirect]] = io.fromWB.wbData.filter(_.bits.redirect.nonEmpty).map(x => {
-    val hasCSR = x.bits.params.hasCSR
-    val out = Wire(Valid(new Redirect()))
-    out.valid := x.valid && x.bits.redirect.get.valid &&
-      (x.bits.redirect.get.bits.isMisPred ||
-        x.bits.redirect.get.bits.hasBackendFault) && !x.bits.robIdx.needFlush(Seq(s1_s3_redirect, s2_s4_redirect))
-    out.bits := x.bits.redirect.get.bits
-    out.bits.debugIsCtrl := true.B
-    out.bits.debugIsMemVio := false.B
-    // for fix timing, next cycle assgin
-    if (!hasCSR) {
-      out.bits.backendIAF := false.B
-      out.bits.backendIPF := false.B
-      out.bits.backendIGPF := false.B
-    }
-    out
-  }).toSeq
-  private val oldestOneHot = Redirect.selectOldestRedirect(exuRedirects)
-  private val CSROH = VecInit(io.fromWB.wbData.filter(_.bits.redirect.nonEmpty).map(x => x.bits.params.hasCSR.B))
-  private val oldestExuRedirectIsCSR = oldestOneHot === CSROH
-  private val oldestExuRedirect = Mux1H(oldestOneHot, exuRedirects)
 
   private val memViolation = io.fromMem.violation
   val loadReplay = Wire(ValidIO(new Redirect))
@@ -319,12 +299,10 @@ class CtrlBlockImp(
    * trace end
    */
 
-
+  val oldestExuRedirect = io.fromWB.delayedOldestExuRedirect
   redirectGen.io.hartId := io.fromTop.hartId
-  redirectGen.io.oldestExuRedirect.valid := GatedValidRegNext(oldestExuRedirect.valid)
-  redirectGen.io.oldestExuRedirect.bits := RegEnable(oldestExuRedirect.bits, oldestExuRedirect.valid)
-  redirectGen.io.oldestExuRedirectIsCSR := RegEnable(oldestExuRedirectIsCSR, oldestExuRedirect.valid)
-  redirectGen.io.instrAddrTransType := RegNext(io.fromCSR.instrAddrTransType)
+  redirectGen.io.oldestExuRedirect.valid := oldestExuRedirect.valid
+  redirectGen.io.oldestExuRedirect.bits := oldestExuRedirect.bits
   redirectGen.io.loadReplay <> loadReplay
   val loadRedirectTargetOffset = Reg(UInt(VAddrBits.W))
   when(memViolation.valid) {
@@ -344,8 +322,8 @@ class CtrlBlockImp(
 
   redirectGen.io.robFlush := s1_robFlushRedirect
 
-  val s5_flushFromRobValidAhead = DelayN(s1_robFlushRedirect.valid, 4)
-  val s6_flushFromRobValid = GatedValidRegNext(s5_flushFromRobValidAhead)
+  val s4_flushFromRobValidAhead = DelayN(s1_robFlushRedirect.valid, 3)
+  val s5_flushFromRobValid = GatedValidRegNext(s4_flushFromRobValidAhead)
   val frontendFlushBits = RegEnable(s1_robFlushRedirect.bits, s1_robFlushRedirect.valid) // ??
 
   // When ROB commits an instruction with a flush, we notify the frontend of the flush without the commit.
@@ -364,19 +342,19 @@ class CtrlBlockImp(
     frontendCommit
   )
 
-  io.frontend.toFtq.redirect.valid := s6_flushFromRobValid || s3_redirectGen.valid
-  io.frontend.toFtq.redirect.bits := Mux(s6_flushFromRobValid, frontendFlushBits, s3_redirectGen.bits)
-  io.frontend.toFtq.ftqIdxSelOH.valid := s6_flushFromRobValid || redirectGen.io.stage2Redirect.valid
-  io.frontend.toFtq.ftqIdxSelOH.bits := Cat(s6_flushFromRobValid, redirectGen.io.stage2oldestOH & Fill(NumRedirect + 1, !s6_flushFromRobValid))
+  io.frontend.toFtq.redirect.valid := s5_flushFromRobValid || s3_redirectGen.valid
+  io.frontend.toFtq.redirect.bits := Mux(s5_flushFromRobValid, frontendFlushBits, s3_redirectGen.bits)
+  io.frontend.toFtq.ftqIdxSelOH.valid := s5_flushFromRobValid || redirectGen.io.stage2Redirect.valid
+  io.frontend.toFtq.ftqIdxSelOH.bits := Cat(s5_flushFromRobValid, redirectGen.io.stage2oldestOH & Fill(NumRedirect + 1, !s5_flushFromRobValid))
 
   //jmp/brh, sel oldest first, only use one read port
-  io.frontend.toFtq.ftqIdxAhead(0).valid := RegNext(oldestExuRedirect.valid) && !s1_robFlushRedirect.valid && !s5_flushFromRobValidAhead
-  io.frontend.toFtq.ftqIdxAhead(0).bits := RegEnable(oldestExuRedirect.bits.ftqIdx, oldestExuRedirect.valid)
+  io.frontend.toFtq.ftqIdxAhead(0).valid := oldestExuRedirect.valid && !s1_robFlushRedirect.valid && !s4_flushFromRobValidAhead
+  io.frontend.toFtq.ftqIdxAhead(0).bits := oldestExuRedirect.bits.ftqIdx
   //loadreplay
-  io.frontend.toFtq.ftqIdxAhead(NumRedirect).valid := loadReplay.valid && !s1_robFlushRedirect.valid && !s5_flushFromRobValidAhead
+  io.frontend.toFtq.ftqIdxAhead(NumRedirect).valid := loadReplay.valid && !s1_robFlushRedirect.valid && !s4_flushFromRobValidAhead
   io.frontend.toFtq.ftqIdxAhead(NumRedirect).bits := loadReplay.bits.ftqIdx
   //exception
-  io.frontend.toFtq.ftqIdxAhead.last.valid := s5_flushFromRobValidAhead
+  io.frontend.toFtq.ftqIdxAhead.last.valid := s4_flushFromRobValidAhead
   io.frontend.toFtq.ftqIdxAhead.last.bits := frontendFlushBits.ftqIdx
 
   for (i <- 0 until CommitWidth) {
@@ -392,25 +370,24 @@ class CtrlBlockImp(
   // T1: s1_robFlushRedirect, rob.io.exception.valid
   // T2: csr.redirect.valid
   // T3: csr.exception.valid
-  // T4: csr.trapTarget
-  // T5: ctrlBlock.trapTarget
-  // T6: io.frontend.toFtq.stage2Redirect.valid
+  // T4: get csr.trapTarget from csr
+  // T5: io.frontend.toFtq
   val s2_robFlushPc = RegEnable(Mux(s1_robFlushRedirect.bits.flushItself(),
     s1_robFlushPc, // replay inst
     s1_robFlushPc + Mux(s1_robFlushRedirect.bits.isRVC, 2.U, 4.U) // flush pipe
   ), s1_robFlushRedirect.valid)
-  private val s5_csrIsTrap = DelayN(rob.io.exception.valid, 4)
-  private val s5_trapTargetFromCsr = io.robio.csr.trapTarget
+  private val s4_csrIsTrap = DelayN(rob.io.exception.valid, 3)
+  private val s4_trapTargetFromCsr = io.robio.csr.trapTarget
 
-  val flushTarget = Mux(s5_csrIsTrap, s5_trapTargetFromCsr.pc, s2_robFlushPc)
-  val s5_trapTargetIAF = Mux(s5_csrIsTrap, s5_trapTargetFromCsr.raiseIAF, false.B)
-  val s5_trapTargetIPF = Mux(s5_csrIsTrap, s5_trapTargetFromCsr.raiseIPF, false.B)
-  val s5_trapTargetIGPF = Mux(s5_csrIsTrap, s5_trapTargetFromCsr.raiseIGPF, false.B)
-  when (s6_flushFromRobValid) {
-    io.frontend.toFtq.redirect.bits.target := RegEnable(flushTarget, s5_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIAF := RegEnable(s5_trapTargetIAF, s5_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIPF := RegEnable(s5_trapTargetIPF, s5_flushFromRobValidAhead)
-    io.frontend.toFtq.redirect.bits.backendIGPF := RegEnable(s5_trapTargetIGPF, s5_flushFromRobValidAhead)
+  val flushTarget = Mux(s4_csrIsTrap, s4_trapTargetFromCsr.pc, s2_robFlushPc)
+  val s4_trapTargetIAF = s4_csrIsTrap && s4_trapTargetFromCsr.raiseIAF
+  val s4_trapTargetIPF = s4_csrIsTrap && s4_trapTargetFromCsr.raiseIPF
+  val s4_trapTargetIGPF = s4_csrIsTrap && s4_trapTargetFromCsr.raiseIGPF
+  when (s5_flushFromRobValid) {
+    io.frontend.toFtq.redirect.bits.target := RegEnable(flushTarget, s4_flushFromRobValidAhead)
+    io.frontend.toFtq.redirect.bits.backendIAF := RegEnable(s4_trapTargetIAF, s4_flushFromRobValidAhead)
+    io.frontend.toFtq.redirect.bits.backendIPF := RegEnable(s4_trapTargetIPF, s4_flushFromRobValidAhead)
+    io.frontend.toFtq.redirect.bits.backendIGPF := RegEnable(s4_trapTargetIGPF, s4_flushFromRobValidAhead)
   }
 
   for (i <- 0 until DecodeWidth) {
@@ -662,7 +639,9 @@ class CtrlBlockImp(
   rat.io.hartId := io.fromTop.hartId
   rat.io.redirect := s1_s3_redirect.valid
   rat.io.rabCommits := rob.io.rabCommits
+  rat.io.vlCommits := rob.io.vlCommits
   rat.io.diffCommits.foreach(_ := rob.io.diffCommits.get)
+  rat.io.diffVlCommits.foreach(_ := rob.io.diffVlCommits.get)
   rat.io.intRenamePorts := rename.io.intRenamePorts
   rat.io.fpRenamePorts := rename.io.fpRenamePorts
   rat.io.vecRenamePorts := rename.io.vecRenamePorts
@@ -671,6 +650,7 @@ class CtrlBlockImp(
 
   rename.io.redirect := s1_s3_redirect
   rename.io.rabCommits := rob.io.rabCommits
+  rename.io.vlCommits := rob.io.vlCommits
   rename.io.singleStep := GatedValidRegNext(io.csrCtrl.singlestep)
   rename.io.waittable := (memCtrl.io.waitTable2Rename zip decode.io.out).map{ case(waittable2rename, decodeOut) =>
     RegEnable(waittable2rename, decodeOut.fire)
@@ -959,6 +939,7 @@ class CtrlBlockIO()(implicit p: Parameters, params: BackendParams) extends XSBun
   }
   val fromWB = new Bundle {
     val wbData = Flipped(MixedVec(params.genWrite2CtrlBundles))
+    val delayedOldestExuRedirect = Flipped(ValidIO(new Redirect)) 
   }
   val redirect = ValidIO(new Redirect)
   val fromMem = new Bundle {

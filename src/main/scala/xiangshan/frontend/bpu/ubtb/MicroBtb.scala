@@ -30,7 +30,7 @@ import xiangshan.frontend.bpu.Prediction
 class MicroBtb(implicit p: Parameters) extends BasePredictor with HasMicroBtbParameters with Helpers {
   class MicroBtbIO(implicit p: Parameters) extends BasePredictorIO with HasFastTrainIO {
     // predict
-    val prediction: Prediction = Output(new Prediction)
+    val prediction: Valid[Prediction] = Output(Valid(new Prediction))
   }
 
   val io: MicroBtbIO = IO(new MicroBtbIO)
@@ -76,10 +76,11 @@ class MicroBtb(implicit p: Parameters) extends BasePredictor with HasMicroBtbPar
   private val s1_hitEntry = entries(s1_hitIdx)
 
   // we do always-taken prediction in ubtb
-  io.prediction.taken       := s1_hit
-  io.prediction.cfiPosition := s1_hitEntry.slot1.position
-  io.prediction.target      := getFullTarget(s1_startPc, s1_hitEntry.slot1.target, s1_hitEntry.slot1.targetCarry)
-  io.prediction.attribute   := s1_hitEntry.slot1.attribute
+  io.prediction.valid            := s1_hit
+  io.prediction.bits.taken       := s1_hit
+  io.prediction.bits.cfiPosition := s1_hitEntry.slot1.position
+  io.prediction.bits.target      := getFullTarget(s1_startPc, s1_hitEntry.slot1.target, s1_hitEntry.slot1.targetCarry)
+  io.prediction.bits.attribute   := s1_hitEntry.slot1.attribute
 
   // update replacer
   replacer.io.predTouch.valid := s1_hit && s1_fire
@@ -181,7 +182,7 @@ class MicroBtb(implicit p: Parameters) extends BasePredictor with HasMicroBtbPar
   private def initEntryIfNotUseful(notUseful: Bool): Unit =
     when(notUseful) {
       t1_updatedEntry.tag := t1_tag
-      t1_updatedEntry.usefulCnt.resetPositive() // usefulCnt inits at strong positive, in/decrease by policy
+      t1_updatedEntry.usefulCnt.resetSaturatePositive() // usefulCnt inits at strong positive, in/decrease by policy
       // slot1
       t1_updatedEntry.slot1.position       := t1_position
       t1_updatedEntry.slot1.attribute      := t1_attribute
@@ -191,7 +192,7 @@ class MicroBtb(implicit p: Parameters) extends BasePredictor with HasMicroBtbPar
       // TODO: 2-taken train
       t1_updatedEntry.slot2.valid := false.B
     }.otherwise {
-      t1_updatedEntry.usefulCnt.value := t1_hitEntry.usefulCnt.getDecrease
+      t1_updatedEntry.usefulCnt := t1_hitEntry.usefulCnt.getDecrease()
     }
 
   when(t1_fire) {
@@ -210,7 +211,7 @@ class MicroBtb(implicit p: Parameters) extends BasePredictor with HasMicroBtbPar
     }.otherwise {
       // everything matches, and actually taken
       // increase usefulCnt
-      t1_updatedEntry.usefulCnt.value := t1_hitEntry.usefulCnt.getIncrease
+      t1_updatedEntry.usefulCnt := t1_hitEntry.usefulCnt.getIncrease()
     }
   }
 

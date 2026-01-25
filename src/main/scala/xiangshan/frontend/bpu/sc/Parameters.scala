@@ -21,25 +21,31 @@ import xiangshan.frontend.bpu.ScTableInfo
 
 case class ScParameters(
     PathTableInfos: Seq[ScTableInfo] = Seq(
-      new ScTableInfo(1024, 8),
-      new ScTableInfo(1024, 16)
+      new ScTableInfo(128, 8),
+      new ScTableInfo(128, 16)
     ),
     GlobalTableInfos: Seq[ScTableInfo] = Seq(
-      new ScTableInfo(1024, 8),
-      new ScTableInfo(1024, 16)
+      new ScTableInfo(128, 8),
+      new ScTableInfo(128, 16)
     ),
-    BiasTableSize:       Int = 1024,
+    BackwardTableInfos: Seq[ScTableInfo] = Seq(
+      new ScTableInfo(128, 4),
+      new ScTableInfo(128, 8)
+    ),
+    BiasTableSize:       Int = 128,
     BiasUseTageBitWidth: Int = 2, // use tage_taken as index bits
-
-    PathEnable:      Boolean = false,
-    GlobalEnable:    Boolean = false,
-    BiasEnable:      Boolean = true,
-    CtrWidth:        Int = 6,
-    ThresholdWidth:  Int = 12,
-    NumTables:       Int = 2,
-    NumBanks:        Int = 2,
-    WriteBufferSize: Int = 4,
-    TagWidth:        Int = 12
+    PathEnable:          Boolean = true,
+    GlobalEnable:        Boolean = false,
+    BWEnable:            Boolean = false,
+    BiasEnable:          Boolean = true,
+    CtrWidth:            Int = 6,
+    ThresholdWidth:      Int = 12,
+    ThresholdInit:       Int = 720,
+    NumTables:           Int = 2,
+    NumBanks:            Int = 2,
+    WriteBufferSize:     Int = 4,
+    TagWidth:            Int = 12,
+    EnableScTrace:       Boolean = false
 ) {}
 
 trait HasScParameters extends HasBpuParameters {
@@ -47,6 +53,7 @@ trait HasScParameters extends HasBpuParameters {
 
   def PathEnable:   Boolean = scParameters.PathEnable
   def GlobalEnable: Boolean = scParameters.GlobalEnable
+  def BWEnable:     Boolean = scParameters.BWEnable
   def BiasEnable:   Boolean = scParameters.BiasEnable
 
   def TageTakenCtrWidth: Int = bpuParameters.tageParameters.TakenCtrWidth
@@ -67,6 +74,10 @@ trait HasScParameters extends HasBpuParameters {
   def BiasTableNumWays:    Int = NumWays << BiasUseTageBitWidth // add tage_taken bits as wayIdx
   def NumBiasTable:        Int = 1
 
+  def BackwardTableInfos: Seq[ScTableInfo] = scParameters.BackwardTableInfos
+  def NumBWTables:        Int              = BackwardTableInfos.length
+
   def WriteBufferSize: Int = scParameters.WriteBufferSize
   def TotalSumWidth: Int = CtrWidth + 1 + log2Ceil(NumPathTables + NumGlobalTables + NumBiasTable) // +1 for counter * 2
+  def EnableScTrace: Boolean = scParameters.EnableScTrace
 }

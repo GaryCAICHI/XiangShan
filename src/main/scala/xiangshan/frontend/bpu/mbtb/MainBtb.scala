@@ -18,6 +18,7 @@ package xiangshan.frontend.bpu.mbtb
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
+import utility.ChiselDB
 import utility.XSPerfAccumulate
 import utility.XSPerfHistogram
 import utils.VecRotate
@@ -30,6 +31,9 @@ class MainBtb(implicit p: Parameters) extends BasePredictor with HasMainBtbParam
     // prediction specific bundle
     val result: Vec[Valid[Prediction]] = Output(Vec(NumBtbResultEntries, Valid(new Prediction)))
     val meta:   MainBtbMeta            = Output(new MainBtbMeta)
+
+    // final s3_takenMask (mbtb + tage + sc), used to touch replacer accurately
+    val s3_takenMask: Vec[Bool] = Input(Vec(NumBtbResultEntries, Bool()))
   }
 
   val io: MainBtbIO = IO(new MainBtbIO)
@@ -47,13 +51,14 @@ class MainBtb(implicit p: Parameters) extends BasePredictor with HasMainBtbParam
 
   io.trainReady := true.B
 
-  private val s0_fire, s1_fire, s2_fire = Wire(Bool())
+  private val s0_fire, s1_fire, s2_fire, s3_fire = Wire(Bool())
   alignBanks.foreach { b =>
     b.io.stageCtrl.s0_fire := s0_fire
     b.io.stageCtrl.s1_fire := s1_fire
     b.io.stageCtrl.s2_fire := s2_fire
-    b.io.stageCtrl.s3_fire := false.B // we don't have a s3 stage in mainBtb
-    b.io.stageCtrl.t0_fire := false.B // dont care, alignBank is using t1
+    b.io.stageCtrl.s3_fire := s3_fire
+    // alignBank does not care t0, it's using t1 only
+    b.io.stageCtrl.t0_fire := false.B
   }
 
   /* *** s0 ***
@@ -104,6 +109,15 @@ class MainBtb(implicit p: Parameters) extends BasePredictor with HasMainBtbParam
   // we don't need to flatten meta entries, keep the alignBank structure, anyway we just use them per alignBank
   io.meta.entries := VecInit(alignBanks.map(_.io.read.resp.metas))
 
+  /* *** s3 ***
+   * touch replacer using final takenMask (mbtb + tage + sc)
+   */
+  s3_fire := io.enable && io.stageCtrl.s3_fire
+  // io.result is flattened, so is s3_takenMask from Bpu top, here we need to slice it back to alignBank structure
+  alignBanks.zipWithIndex.foreach { case (b, i) =>
+    b.io.s3_takenMask := io.s3_takenMask.slice(i * NumWay, (i + 1) * NumWay)
+  }
+
   /* *** t0 ***
    * receive training data and latch
    */
@@ -113,7 +127,7 @@ class MainBtb(implicit p: Parameters) extends BasePredictor with HasMainBtbParam
   /* *** t1 ***
    * calculate write data and write to alignBanks
    */
-  private val t1_fire  = RegNext(t0_fire) && io.enable
+  private val t1_fire  = RegNext(t0_fire, init = false.B) && io.enable
   private val t1_train = RegEnable(t0_train, t0_fire)
 
   private val t1_startPc = t1_train.startPc
@@ -135,6 +149,29 @@ class MainBtb(implicit p: Parameters) extends BasePredictor with HasMainBtbParam
     // see comments in MainBtbAlignBank.scala
     b.io.write.req.bits.mispredictInfo := t1_mispredictInfo
   }
+  /* --------------------------------------------------------------------------------------------------------------
+     MainBTB Trace
+     -------------------------------------------------------------------------------------------------------------- */
+  private val alignBankTraceVec = alignBanks.map(_.io.trace)
+  private val finalTrace        = Mux1H(t1_writeAlignBankMask, alignBankTraceVec)
+  private val finalTraceStartPc = Mux1H(t1_writeAlignBankMask, t1_startPcVec)
+  private val mbtbTrace         = Wire(new MainBtbTrace)
+
+  mbtbTrace.startPc      := finalTraceStartPc
+  mbtbTrace.setIdx       := finalTrace.setIdx
+  mbtbTrace.internalIdx  := finalTrace.bankIdx
+  mbtbTrace.alignBankIdx := PriorityEncoder(t1_writeAlignBankMask)
+  mbtbTrace.wayIdx       := finalTrace.wayIdx
+  mbtbTrace.attribute    := finalTrace.entry.attribute
+  mbtbTrace.cfiPosition  := finalTrace.entry.position
+
+  private val mbtbTraceDBTable = ChiselDB.createTable("MBTBTrace", new MainBtbTrace(), EnableMainbtbTrace)
+  mbtbTraceDBTable.log(
+    data = mbtbTrace,
+    en = t1_fire && finalTrace.needWrite,
+    clock = clock,
+    reset = reset
+  )
 
   /* *** statistics *** */
   private val perf_s2HitMask             = VecInit(alignBanks.flatMap(_.io.read.resp.predictions.map(_.valid)))

@@ -18,10 +18,17 @@ package xiangshan.frontend.bpu.abtb
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
+import xiangshan.XSCoreParamsKey
 import xiangshan.frontend.PrunedAddr
 import xiangshan.frontend.bpu.BranchAttribute
+import xiangshan.frontend.bpu.SaturateCounterFactory
 import xiangshan.frontend.bpu.TargetCarry
 import xiangshan.frontend.bpu.WriteReqBundle
+
+object TakenCounter extends SaturateCounterFactory {
+  def width(implicit p: Parameters): Int =
+    p(XSCoreParamsKey).frontendParameters.bpuParameters.abtbParameters.TakenCounterWidth
+}
 
 class BankReadReq(implicit p: Parameters) extends AheadBtbBundle {
   val setIdx: UInt = UInt(SetIdxWidth.W)
@@ -59,14 +66,18 @@ class ReplacerIO(implicit p: Parameters) extends AheadBtbBundle {
   val victimWayIdx:  UInt = Output(UInt(WayIdxWidth.W))
 }
 
+class AheadBtbMetaEntry(implicit p: Parameters) extends AheadBtbBundle {
+  val hit:             Bool            = Bool()
+  val attribute:       BranchAttribute = new BranchAttribute
+  val position:        UInt            = UInt(CfiPositionWidth.W)
+  val targetLowerBits: UInt            = UInt(TargetLowerBitsWidth.W)
+}
+
 class AheadBtbMeta(implicit p: Parameters) extends AheadBtbBundle {
-  val valid:           Bool                 = Bool()
-  val hitMask:         Vec[Bool]            = Vec(NumWays, Bool())
-  val attributes:      Vec[BranchAttribute] = Vec(NumWays, new BranchAttribute)
-  val positions:       Vec[UInt]            = Vec(NumWays, UInt(CfiPositionWidth.W))
-  val taken:           Bool                 = Bool()
-  val takenMaskOH:     Vec[Bool]            = Vec(NumWays, Bool())
-  val targetLowerBits: UInt                 = UInt(TargetLowerBitsWidth.W)
+  val valid:    Bool                   = Bool()
+  val setIdx:   UInt                   = UInt(SetIdxWidth.W)
+  val bankMask: UInt                   = UInt(NumBanks.W)
+  val entries:  Vec[AheadBtbMetaEntry] = Vec(NumWays, new AheadBtbMetaEntry())
 }
 
 class AheadBtbEntry(implicit p: Parameters) extends AheadBtbBundle {
