@@ -105,7 +105,7 @@ class VecExceptionGen(implicit p: Parameters) extends XSModule{
   ).map(_ === inst.ALL).reduce(_ || _)
 
   private val zvbasebandInst = Seq(
-    VSCMUL_VV, VSCMULCJ_VV, VSCMACC_VV, VSCMACCCJ_VV
+    VSCMUL_VV, VSCMULCJ_VV, VSCMACC_VV, VSCMACCCJ_VV, VSCADDCONJ_VV, VSCADDRQ_VV, VSCADDRTQ_VV
   ).map(_ === inst.ALL).reduce(_ || _)
 
   private val narrowingInst = Seq(
@@ -197,7 +197,7 @@ class VecExceptionGen(implicit p: Parameters) extends XSModule{
 
   private val wnEewIllegal = (vdWideningInst || narrowingInst || redWideningInst) && SEW === 3.U
 
-  // Zvbaseband
+  // xvbbp
   private val zvbasebandEewIllegal = zvbasebandInst && SEW =/= 1.U
 
   private val eewIllegal = fpEewIllegal || intExtEewIllegal || wnEewIllegal || zvbasebandEewIllegal

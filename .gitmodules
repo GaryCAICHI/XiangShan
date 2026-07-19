@@ -18,8 +18,8 @@
 	url = https://github.com/OpenXiangShan/Utility.git
 [submodule "yunsuan"]
 	path = yunsuan
-	url = git@github.com:GaryCAICHI/YunSuan.git
-	branch = kunminghu-v3-zvbaseband
+	url = https://github.com/GaryCAICHI/YunSuan.git
+	branch = kunminghu-v2-xvbbp
 [submodule "coupledL2"]
 	path = coupledL2
 	url = https://github.com/OpenXiangShan/CoupledL2.git

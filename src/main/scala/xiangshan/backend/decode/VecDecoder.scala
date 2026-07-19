@@ -248,11 +248,14 @@ object VecDecoder extends DecodeConstants {
     VROR_VV         -> OPIVV(FuType.vialuF, VialuFixType.vror_vv, T, F, F, UopSplitType.VEC_VVV),
     VWSLL_VV        -> OPIVV(FuType.vialuF, VialuFixType.vwsll_vv, T, F, F, UopSplitType.VEC_VVW),
 
-    // Zvbaseband
+    // xvbbp
     VSCMUL_VV       -> OPIVV(FuType.vimac, VimacType.vscmul, T, F, T, UopSplitType.VEC_VVV),
     VSCMULCJ_VV     -> OPIVV(FuType.vimac, VimacType.vscmulcj, T, F, T, UopSplitType.VEC_VVV),
     VSCMACC_VV      -> OPIVV(FuType.vimac, VimacType.vscmacc, T, F, T, UopSplitType.VEC_VVV),
     VSCMACCCJ_VV    -> OPIVV(FuType.vimac, VimacType.vscmacccj, T, F, T, UopSplitType.VEC_VVV),
+    VSCADDCONJ_VV   -> OPIVV(FuType.vialuF, VialuFixType.vscaddconj, T, F, T, UopSplitType.VEC_VVV),
+    VSCADDRQ_VV     -> OPIVV(FuType.vialuF, VialuFixType.vscaddrq, T, F, T, UopSplitType.VEC_VVV),
+    VSCADDRTQ_VV    -> OPIVV(FuType.vialuF, VialuFixType.vscaddrtq, T, F, T, UopSplitType.VEC_VVV),
   )
 
   val opivx: Array[(BitPat, XSDecodeBase)] = Array(
