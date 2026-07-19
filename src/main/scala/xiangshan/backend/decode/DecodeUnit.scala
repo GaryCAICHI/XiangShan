@@ -985,7 +985,7 @@ class DecodeUnit(implicit p: Parameters) extends XSModule with DecodeUnitConstan
   private val vmaInsts = Seq(
     VMACC_VV, VMACC_VX, VNMSAC_VV, VNMSAC_VX, VMADD_VV, VMADD_VX, VNMSUB_VV, VNMSUB_VX,
     VWMACCU_VV, VWMACCU_VX, VWMACC_VV, VWMACC_VX, VWMACCSU_VV, VWMACCSU_VX, VWMACCUS_VX,
-    // Zvbaseband
+    // xvbbp
     VSCMACC_VV, VSCMACCCJ_VV,
   )
   private val wfflagsInsts = Seq(
