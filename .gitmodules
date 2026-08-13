@@ -19,7 +19,7 @@
 [submodule "yunsuan"]
 	path = yunsuan
 	url = https://github.com/GaryCAICHI/YunSuan.git
-	branch = kunminghu-v2-xvbbp
+	branch = kunminghu-v2-xvbbp-test
 [submodule "coupledL2"]
 	path = coupledL2
 	url = https://github.com/OpenXiangShan/CoupledL2.git
